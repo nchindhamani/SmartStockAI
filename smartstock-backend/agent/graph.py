@@ -1,13 +1,33 @@
 # agent/graph.py
 # LangGraph workflow definition for the SmartStock AI Agent
+# Supports both Google Gemini and OpenAI as LLM providers
 
 import os
 import re
-from typing import Literal
+from typing import Literal, Union
 
+from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-from langchain_openai import ChatOpenAI
+from langchain_core.language_models.chat_models import BaseChatModel
 from langgraph.graph import StateGraph, END
+
+# Load environment variables
+load_dotenv()
+
+# Import LLM providers (with fallbacks)
+try:
+    from langchain_google_genai import ChatGoogleGenerativeAI
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
+    ChatGoogleGenerativeAI = None
+
+try:
+    from langchain_openai import ChatOpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
+    ChatOpenAI = None
 
 from agent.state import AgentState, ToolResult, Metric, Citation
 from agent.memory import get_memory_saver, get_thread_config
@@ -50,13 +70,66 @@ The tool has already provided verified data with citations. Your response should
 Tool output will be provided. Format your response naturally."""
 
 
-def create_llm(model: str = "gpt-4o-mini", temperature: float = 0.0) -> ChatOpenAI:
-    """Create a ChatOpenAI instance with the specified model."""
-    return ChatOpenAI(
-        model=model,
-        temperature=temperature,
-        api_key=os.getenv("OPENAI_API_KEY", "demo-key")
-    )
+def create_llm(
+    provider: str = None,
+    model: str = None,
+    temperature: float = 0.0
+) -> BaseChatModel:
+    """
+    Create an LLM instance with the specified provider and model.
+    
+    Supports:
+    - Google Gemini (default if GOOGLE_API_KEY is set)
+    - OpenAI (fallback if OPENAI_API_KEY is set)
+    
+    Args:
+        provider: 'gemini' or 'openai' (auto-detected if None)
+        model: Model name (defaults based on provider)
+        temperature: Sampling temperature
+        
+    Returns:
+        LangChain chat model instance
+    """
+    # Auto-detect provider based on available API keys
+    if provider is None:
+        if os.getenv("GOOGLE_API_KEY"):
+            provider = "gemini"
+        elif os.getenv("OPENAI_API_KEY"):
+            provider = "openai"
+        else:
+            # Demo mode - return a mock or raise clear error
+            print("[Agent] Warning: No API keys found. Using demo mode with limited functionality.")
+            provider = "gemini"  # Will fail gracefully
+    
+    if provider == "gemini":
+        if not GEMINI_AVAILABLE:
+            raise ImportError("langchain-google-genai not installed. Run: uv add langchain-google-genai")
+        
+        model = model or "gemini-1.5-flash"  # Fast and cost-effective
+        print(f"[Agent] Using Google Gemini: {model}")
+        
+        return ChatGoogleGenerativeAI(
+            model=model,
+            temperature=temperature,
+            google_api_key=os.getenv("GOOGLE_API_KEY"),
+            convert_system_message_to_human=True  # Gemini doesn't support system messages directly
+        )
+    
+    elif provider == "openai":
+        if not OPENAI_AVAILABLE:
+            raise ImportError("langchain-openai not installed. Run: uv add langchain-openai")
+        
+        model = model or "gpt-4o-mini"
+        print(f"[Agent] Using OpenAI: {model}")
+        
+        return ChatOpenAI(
+            model=model,
+            temperature=temperature,
+            api_key=os.getenv("OPENAI_API_KEY")
+        )
+    
+    else:
+        raise ValueError(f"Unknown LLM provider: {provider}. Use 'gemini' or 'openai'.")
 
 
 def extract_tool_params_from_query(query: str, tool_name: str) -> dict:
