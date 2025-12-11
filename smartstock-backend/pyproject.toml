@@ -26,6 +26,10 @@ dependencies = [
     "langgraph-checkpoint-sqlite>=3.0.1",
     "httpx>=0.28.1",
     "unstructured>=0.18.21",
+    "requests>=2.32.5",
+    "pandas>=2.3.3",
+    "sec-edgar-api>=1.1.0",
+    "aiohttp>=3.13.2",
 ]
 
 [project.optional-dependencies]

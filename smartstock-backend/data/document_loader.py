@@ -10,11 +10,23 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 from dataclasses import dataclass
 
-# Import unstructured for document parsing
-from unstructured.partition.html import partition_html
-from unstructured.partition.pdf import partition_pdf
-from unstructured.partition.text import partition_text
-from unstructured.chunking.title import chunk_by_title
+# Import unstructured for document parsing (with optional PDF support)
+try:
+    from unstructured.partition.html import partition_html
+    from unstructured.partition.text import partition_text
+    from unstructured.chunking.title import chunk_by_title
+    UNSTRUCTURED_AVAILABLE = True
+except ImportError:
+    UNSTRUCTURED_AVAILABLE = False
+    print("[SECDocumentLoader] Warning: unstructured library not available")
+
+# PDF support is optional (requires additional dependencies)
+try:
+    from unstructured.partition.pdf import partition_pdf
+    PDF_SUPPORT = True
+except ImportError:
+    PDF_SUPPORT = False
+    partition_pdf = None
 
 
 @dataclass
@@ -240,10 +252,19 @@ class SECDocumentLoader:
         """
         metadata = metadata or {}
         
+        # Check if unstructured is available
+        if not UNSTRUCTURED_AVAILABLE:
+            print("[SECDocumentLoader] Unstructured not available, using regex fallback")
+            return self._chunk_text(self._clean_html(content), metadata)
+        
         try:
             # Parse the document
             if content_type == "html":
                 elements = partition_html(text=content)
+            elif content_type == "pdf" and PDF_SUPPORT:
+                # PDF requires file path, not supported in memory
+                print("[SECDocumentLoader] PDF parsing requires file path, using text fallback")
+                elements = partition_text(text=content)
             elif content_type == "text":
                 elements = partition_text(text=content)
             else:

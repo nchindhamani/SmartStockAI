@@ -1,10 +1,16 @@
 # data/ticker_mapping.py
 # Ticker to CIK (Central Index Key) Mapping Service
 # Maps stock tickers to SEC CIK numbers for EDGAR API access
+# Includes auto-download and caching of official SEC mapping file
 
+import os
+import json
 import httpx
-from typing import Optional, Dict, Any
+import aiohttp
+from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
+from datetime import datetime, timedelta
+from pathlib import Path
 
 
 @dataclass
@@ -26,11 +32,17 @@ class TickerMapper:
     a mapping service to convert tickers like 'AAPL' to their
     corresponding CIK like '0000320193'.
     
-    Uses the SEC's company tickers JSON endpoint and maintains
-    a local cache for performance.
+    Features:
+    - Pre-loaded cache of 25+ major tech companies
+    - Auto-download of full SEC ticker list
+    - Local file caching with configurable refresh
+    - Fast lookup with O(1) access
     """
     
     SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
+    CACHE_DIR = "./data/cache"
+    CACHE_FILE = "sec_tickers.json"
+    CACHE_EXPIRY_DAYS = 7  # Refresh cache weekly
     
     # Static mapping for common tickers (fallback)
     KNOWN_TICKERS: Dict[str, CompanyInfo] = {
@@ -59,18 +71,119 @@ class TickerMapper:
         "BAC": CompanyInfo("BAC", "0000070858", "Bank of America Corporation", "NYSE"),
         "WMT": CompanyInfo("WMT", "0000104169", "Walmart Inc.", "NYSE"),
         "DIS": CompanyInfo("DIS", "0001744489", "The Walt Disney Company", "NYSE"),
+        "COST": CompanyInfo("COST", "0000909832", "Costco Wholesale Corporation", "NASDAQ"),
+        "HD": CompanyInfo("HD", "0000354950", "The Home Depot Inc.", "NYSE"),
+        "UNH": CompanyInfo("UNH", "0000731766", "UnitedHealth Group Inc.", "NYSE"),
+        "JNJ": CompanyInfo("JNJ", "0000200406", "Johnson & Johnson", "NYSE"),
+        "PG": CompanyInfo("PG", "0000080424", "The Procter & Gamble Company", "NYSE"),
     }
     
-    def __init__(self, user_agent: str = "SmartStockAI/1.0 (contact@smartstockai.com)"):
+    def __init__(
+        self, 
+        user_agent: str = "SmartStockAI/1.0 (contact@smartstockai.com)",
+        auto_load: bool = True
+    ):
         """
         Initialize the ticker mapper.
         
         Args:
             user_agent: Required by SEC API
+            auto_load: If True, automatically load cached data on init
         """
         self.user_agent = user_agent
         self._cache: Dict[str, CompanyInfo] = dict(self.KNOWN_TICKERS)
         self._full_list_loaded = False
+        self._last_update: Optional[datetime] = None
+        
+        # Ensure cache directory exists
+        os.makedirs(self.CACHE_DIR, exist_ok=True)
+        
+        # Auto-load from local cache if available
+        if auto_load:
+            self._load_from_local_cache()
+    
+    def _get_cache_path(self) -> Path:
+        """Get the path to the local cache file."""
+        return Path(self.CACHE_DIR) / self.CACHE_FILE
+    
+    def _is_cache_valid(self) -> bool:
+        """Check if the local cache is still valid."""
+        cache_path = self._get_cache_path()
+        if not cache_path.exists():
+            return False
+        
+        # Check file modification time
+        mtime = datetime.fromtimestamp(cache_path.stat().st_mtime)
+        return datetime.now() - mtime < timedelta(days=self.CACHE_EXPIRY_DAYS)
+    
+    def _load_from_local_cache(self) -> bool:
+        """
+        Load ticker mappings from local cache file.
+        
+        Returns:
+            True if cache was loaded successfully
+        """
+        cache_path = self._get_cache_path()
+        
+        if not cache_path.exists():
+            return False
+        
+        try:
+            with open(cache_path, 'r') as f:
+                data = json.load(f)
+            
+            # Load companies into cache
+            for ticker, info in data.get("companies", {}).items():
+                self._cache[ticker] = CompanyInfo(
+                    ticker=ticker,
+                    cik=info.get("cik", ""),
+                    name=info.get("name", "Unknown"),
+                    exchange=info.get("exchange"),
+                    sic=info.get("sic")
+                )
+            
+            self._full_list_loaded = True
+            self._last_update = datetime.fromisoformat(data.get("updated_at", "2000-01-01"))
+            print(f"[TickerMapper] Loaded {len(self._cache)} tickers from local cache")
+            return True
+            
+        except Exception as e:
+            print(f"[TickerMapper] Failed to load local cache: {e}")
+            return False
+    
+    def _save_to_local_cache(self) -> bool:
+        """
+        Save current mappings to local cache file.
+        
+        Returns:
+            True if cache was saved successfully
+        """
+        cache_path = self._get_cache_path()
+        
+        try:
+            data = {
+                "updated_at": datetime.now().isoformat(),
+                "count": len(self._cache),
+                "companies": {
+                    ticker: {
+                        "cik": info.cik,
+                        "name": info.name,
+                        "exchange": info.exchange,
+                        "sic": info.sic
+                    }
+                    for ticker, info in self._cache.items()
+                }
+            }
+            
+            with open(cache_path, 'w') as f:
+                json.dump(data, f, indent=2)
+            
+            print(f"[TickerMapper] Saved {len(self._cache)} tickers to local cache")
+            return True
+            
+        except Exception as e:
+            print(f"[TickerMapper] Failed to save local cache: {e}")
+            return False
     
     def get_cik(self, ticker: str) -> Optional[str]:
         """
@@ -102,29 +215,40 @@ class TickerMapper:
         ticker = ticker.upper()
         return self._cache.get(ticker)
     
-    async def load_full_ticker_list(self) -> int:
+    async def download_full_ticker_list(self, force: bool = False) -> int:
         """
-        Load the complete ticker list from SEC.
+        Download the complete ticker list from SEC EDGAR.
         
+        This fetches the official SEC company tickers JSON file
+        and populates the local cache.
+        
+        Args:
+            force: If True, download even if cache is valid
+            
         Returns:
             Number of tickers loaded
         """
-        if self._full_list_loaded:
+        # Check if we need to download
+        if not force and self._is_cache_valid() and self._full_list_loaded:
+            print("[TickerMapper] Using cached ticker list (still valid)")
             return len(self._cache)
         
+        print("[TickerMapper] Downloading SEC ticker list...")
+        
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
                     self.SEC_TICKERS_URL,
                     headers={"User-Agent": self.user_agent}
-                )
-                response.raise_for_status()
-                data = response.json()
+                ) as response:
+                    response.raise_for_status()
+                    data = await response.json()
             
             # SEC returns format: {"0": {"cik_str": "320193", "ticker": "AAPL", "title": "Apple Inc."}}
+            new_count = 0
             for key, company in data.items():
                 ticker = company.get("ticker", "").upper()
-                if ticker:
+                if ticker and ticker not in self._cache:
                     cik = str(company.get("cik_str", "")).zfill(10)
                     name = company.get("title", "Unknown")
                     self._cache[ticker] = CompanyInfo(
@@ -132,12 +256,19 @@ class TickerMapper:
                         cik=cik,
                         name=name
                     )
+                    new_count += 1
             
             self._full_list_loaded = True
+            self._last_update = datetime.now()
+            
+            # Save to local cache
+            self._save_to_local_cache()
+            
+            print(f"[TickerMapper] Downloaded {new_count} new tickers (total: {len(self._cache)})")
             return len(self._cache)
             
         except Exception as e:
-            print(f"[TickerMapper] Failed to load SEC ticker list: {e}")
+            print(f"[TickerMapper] Failed to download SEC ticker list: {e}")
             return len(self._cache)
     
     def ticker_to_cik(self, ticker: str) -> str:
@@ -155,7 +286,7 @@ class TickerMapper:
         """
         cik = self.get_cik(ticker)
         if cik is None:
-            raise ValueError(f"Unknown ticker: {ticker}")
+            raise ValueError(f"Unknown ticker: {ticker}. Try calling download_full_ticker_list() first.")
         return cik.zfill(10)
     
     def cik_to_ticker(self, cik: str) -> Optional[str]:
@@ -174,7 +305,7 @@ class TickerMapper:
                 return ticker
         return None
     
-    def search(self, query: str, limit: int = 10) -> list[CompanyInfo]:
+    def search(self, query: str, limit: int = 10) -> List[CompanyInfo]:
         """
         Search for companies by ticker or name.
         
@@ -185,22 +316,36 @@ class TickerMapper:
         Returns:
             List of matching CompanyInfo objects
         """
-        query = query.upper()
+        query_upper = query.upper()
+        query_lower = query.lower()
         results = []
         
-        for ticker, info in self._cache.items():
-            if query in ticker or query in info.name.upper():
-                results.append(info)
-                if len(results) >= limit:
-                    break
+        # Exact ticker match first
+        if query_upper in self._cache:
+            results.append(self._cache[query_upper])
         
-        return results
+        # Then partial matches
+        for ticker, info in self._cache.items():
+            if len(results) >= limit:
+                break
+            if info in results:
+                continue
+            if query_upper in ticker or query_lower in info.name.lower():
+                results.append(info)
+        
+        return results[:limit]
+    
+    def get_all_tickers(self) -> List[str]:
+        """Get all cached ticker symbols."""
+        return list(self._cache.keys())
     
     def get_stats(self) -> Dict[str, Any]:
         """Get mapper statistics."""
         return {
             "cached_tickers": len(self._cache),
-            "full_list_loaded": self._full_list_loaded
+            "full_list_loaded": self._full_list_loaded,
+            "last_update": self._last_update.isoformat() if self._last_update else None,
+            "cache_valid": self._is_cache_valid()
         }
 
 
@@ -215,3 +360,17 @@ def get_ticker_mapper() -> TickerMapper:
         _ticker_mapper = TickerMapper()
     return _ticker_mapper
 
+
+async def ensure_ticker_data() -> int:
+    """
+    Ensure ticker data is loaded, downloading if necessary.
+    
+    This is a convenience function for pipeline scripts.
+    
+    Returns:
+        Number of tickers available
+    """
+    mapper = get_ticker_mapper()
+    if not mapper._full_list_loaded or not mapper._is_cache_valid():
+        return await mapper.download_full_ticker_list()
+    return len(mapper._cache)
