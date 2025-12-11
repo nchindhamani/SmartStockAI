@@ -670,6 +670,18 @@ wheels = [
 ]
 
 [[package]]
+name = "finnhub-python"
+version = "2.4.26"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/83/d5/ef93df0a0bf7ae633669438c4ddd0ccf3f70841882e225b183d11d8ad9a6/finnhub_python-2.4.26.tar.gz", hash = "sha256:826abfad1c4692f278358c799c8b1608dbf33c9bc2be4be018b9d9b944fc822c", size = 13604, upload-time = "2025-12-01T07:40:05.836Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0e/27/a4243792764826ae2de841e995165050138d4273ed23c8e96e66cd59c3e7/finnhub_python-2.4.26-py3-none-any.whl", hash = "sha256:9d9b13eebfc9ce531bee844689992b6cccfb3f33e399250286f8b8ca05570885", size = 11998, upload-time = "2025-12-01T07:40:04.386Z" },
+]
+
+[[package]]
 name = "flatbuffers"
 version = "25.9.23"
 source = { registry = "https://pypi.org/simple" }
@@ -3775,6 +3787,7 @@ dependencies = [
     { name = "aiosqlite" },
     { name = "chromadb" },
     { name = "fastapi" },
+    { name = "finnhub-python" },
     { name = "httpx" },
     { name = "langchain-core" },
     { name = "langchain-google-genai" },
@@ -3820,6 +3833,7 @@ requires-dist = [
     { name = "aiosqlite", specifier = ">=0.21.0" },
     { name = "chromadb", specifier = ">=1.3.6" },
     { name = "fastapi", specifier = ">=0.109.0" },
+    { name = "finnhub-python", specifier = ">=2.4.26" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.25.0" },
     { name = "langchain-core", specifier = ">=1.1.3" },

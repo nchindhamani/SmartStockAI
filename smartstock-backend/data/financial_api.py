@@ -1,23 +1,30 @@
 # data/financial_api.py
 # Financial Metrics Downloader
 # Fetches historical prices and fundamental metrics from public APIs
-# Supports Alpha Vantage (free tier) and Financial Modeling Prep (FMP)
+# Supports Finnhub (free tier) and Financial Modeling Prep (FMP)
 
 import os
 import aiohttp
-import pandas as pd
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 from enum import Enum
 from dotenv import load_dotenv
 
+# Finnhub client
+try:
+    import finnhub
+    FINNHUB_AVAILABLE = True
+except ImportError:
+    FINNHUB_AVAILABLE = False
+    finnhub = None
+
 load_dotenv()
 
 
 class DataProvider(Enum):
     """Supported financial data providers."""
-    ALPHA_VANTAGE = "alpha_vantage"
+    FINNHUB = "finnhub"
     FMP = "fmp"  # Financial Modeling Prep
     DEMO = "demo"  # Demo mode with sample data
 
@@ -54,50 +61,59 @@ class FinancialDataFetcher:
     - Historical stock prices (daily)
     - Fundamental metrics (P/E, Revenue Growth, etc.)
     - Analyst ratings and price targets
+    - Company news and sentiment
     
-    Uses free tiers of Alpha Vantage or FMP.
+    Uses free tiers of Finnhub or FMP.
     Falls back to demo data if no API key is configured.
     """
     
     # API endpoints
-    ALPHA_VANTAGE_BASE = "https://www.alphavantage.co/query"
+    FINNHUB_BASE = "https://finnhub.io/api/v1"
     FMP_BASE = "https://financialmodelingprep.com/api/v3"
     
     # Rate limiting (requests per minute)
     RATE_LIMITS = {
-        DataProvider.ALPHA_VANTAGE: 5,  # Free tier: 5 calls/min
+        DataProvider.FINNHUB: 60,  # Free tier: 60 calls/min
         DataProvider.FMP: 300,  # Free tier: 300 calls/day
     }
     
     def __init__(
         self,
-        alpha_vantage_key: Optional[str] = None,
+        finnhub_key: Optional[str] = None,
         fmp_key: Optional[str] = None,
-        preferred_provider: DataProvider = DataProvider.ALPHA_VANTAGE
+        preferred_provider: DataProvider = DataProvider.FINNHUB
     ):
         """
         Initialize the financial data fetcher.
         
         Args:
-            alpha_vantage_key: Alpha Vantage API key
+            finnhub_key: Finnhub API key
             fmp_key: Financial Modeling Prep API key
             preferred_provider: Which provider to use by default
         """
-        self.alpha_vantage_key = alpha_vantage_key or os.getenv("ALPHA_VANTAGE_API_KEY")
+        self.finnhub_key = finnhub_key or os.getenv("FINNHUB_API_KEY")
         self.fmp_key = fmp_key or os.getenv("FMP_API_KEY")
         
+        # Initialize Finnhub client if available
+        self.finnhub_client = None
+        if self.finnhub_key and FINNHUB_AVAILABLE:
+            self.finnhub_client = finnhub.Client(api_key=self.finnhub_key)
+        
         # Determine which provider to use
-        if preferred_provider == DataProvider.ALPHA_VANTAGE and self.alpha_vantage_key:
-            self.provider = DataProvider.ALPHA_VANTAGE
+        if preferred_provider == DataProvider.FINNHUB and self.finnhub_key:
+            self.provider = DataProvider.FINNHUB
         elif preferred_provider == DataProvider.FMP and self.fmp_key:
             self.provider = DataProvider.FMP
-        elif self.alpha_vantage_key:
-            self.provider = DataProvider.ALPHA_VANTAGE
+        elif self.finnhub_key:
+            self.provider = DataProvider.FINNHUB
         elif self.fmp_key:
             self.provider = DataProvider.FMP
         else:
             self.provider = DataProvider.DEMO
             print("[FinancialDataFetcher] No API keys configured, using DEMO mode")
+        
+        if self.provider != DataProvider.DEMO:
+            print(f"[FinancialDataFetcher] Using {self.provider.value} provider")
     
     # ==========================================
     # Historical Price Data
@@ -122,61 +138,62 @@ class FinancialDataFetcher:
         """
         if self.provider == DataProvider.DEMO:
             return self._get_demo_prices(ticker, days)
-        elif self.provider == DataProvider.ALPHA_VANTAGE:
-            return await self._get_alpha_vantage_prices(ticker, days, adjusted)
+        elif self.provider == DataProvider.FINNHUB:
+            return await self._get_finnhub_prices(ticker, days)
         elif self.provider == DataProvider.FMP:
             return await self._get_fmp_prices(ticker, days)
         
         return []
     
-    async def _get_alpha_vantage_prices(
+    async def _get_finnhub_prices(
         self,
         ticker: str,
-        days: int,
-        adjusted: bool
+        days: int
     ) -> List[StockPrice]:
-        """Fetch prices from Alpha Vantage."""
-        function = "TIME_SERIES_DAILY_ADJUSTED" if adjusted else "TIME_SERIES_DAILY"
-        
-        params = {
-            "function": function,
-            "symbol": ticker,
-            "outputsize": "full" if days > 100 else "compact",
-            "apikey": self.alpha_vantage_key
-        }
+        """Fetch prices from Finnhub."""
+        if not self.finnhub_client:
+            print("[FinancialDataFetcher] Finnhub client not available")
+            return self._get_demo_prices(ticker, days)
         
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(self.ALPHA_VANTAGE_BASE, params=params) as response:
-                    data = await response.json()
+            # Calculate date range
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=days)
             
-            # Parse response
-            time_series_key = "Time Series (Daily)"
-            if time_series_key not in data:
-                print(f"[FinancialDataFetcher] Alpha Vantage error: {data.get('Note', data.get('Error Message', 'Unknown'))}")
+            # Finnhub uses Unix timestamps
+            start_ts = int(start_date.timestamp())
+            end_ts = int(end_date.timestamp())
+            
+            # Fetch candle data (OHLCV)
+            data = self.finnhub_client.stock_candles(
+                ticker.upper(),
+                'D',  # Daily resolution
+                start_ts,
+                end_ts
+            )
+            
+            if data.get('s') != 'ok' or not data.get('c'):
+                print(f"[FinancialDataFetcher] Finnhub: No data for {ticker}")
                 return self._get_demo_prices(ticker, days)
             
             prices = []
-            cutoff_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-            
-            for date_str, values in data[time_series_key].items():
-                if date_str < cutoff_date:
-                    break
-                
+            for i in range(len(data['c'])):
+                date_str = datetime.fromtimestamp(data['t'][i]).strftime("%Y-%m-%d")
                 prices.append(StockPrice(
                     date=date_str,
-                    open=float(values["1. open"]),
-                    high=float(values["2. high"]),
-                    low=float(values["3. low"]),
-                    close=float(values["4. close"]),
-                    volume=int(values["6. volume"]) if adjusted else int(values["5. volume"]),
-                    adjusted_close=float(values["5. adjusted close"]) if adjusted else None
+                    open=float(data['o'][i]),
+                    high=float(data['h'][i]),
+                    low=float(data['l'][i]),
+                    close=float(data['c'][i]),
+                    volume=int(data['v'][i]),
+                    adjusted_close=float(data['c'][i])  # Finnhub returns adjusted prices
                 ))
             
-            return prices
+            # Return most recent first
+            return list(reversed(prices))
             
         except Exception as e:
-            print(f"[FinancialDataFetcher] Alpha Vantage error: {e}")
+            print(f"[FinancialDataFetcher] Finnhub error: {e}")
             return self._get_demo_prices(ticker, days)
     
     async def _get_fmp_prices(self, ticker: str, days: int) -> List[StockPrice]:
@@ -274,13 +291,112 @@ class FinancialDataFetcher:
         """
         if self.provider == DataProvider.DEMO:
             return self._get_demo_metrics(ticker)
+        elif self.provider == DataProvider.FINNHUB:
+            return await self._get_finnhub_metrics(ticker)
         elif self.provider == DataProvider.FMP:
             return await self._get_fmp_metrics(ticker, quarters)
-        elif self.provider == DataProvider.ALPHA_VANTAGE:
-            # Alpha Vantage fundamental data requires premium
-            return self._get_demo_metrics(ticker)
         
         return []
+    
+    async def _get_finnhub_metrics(self, ticker: str) -> List[FinancialMetric]:
+        """Fetch basic financials from Finnhub."""
+        if not self.finnhub_client:
+            return self._get_demo_metrics(ticker)
+        
+        metrics = []
+        
+        try:
+            # Get basic financials
+            data = self.finnhub_client.company_basic_financials(ticker.upper(), 'all')
+            
+            if not data or 'metric' not in data:
+                print(f"[FinancialDataFetcher] Finnhub: No financials for {ticker}")
+                return self._get_demo_metrics(ticker)
+            
+            metric_data = data['metric']
+            period_end = datetime.now().strftime("%Y-%m-%d")
+            
+            # Map Finnhub metrics
+            metric_mappings = [
+                ("pe_ratio", metric_data.get("peNormalizedAnnual"), "x"),
+                ("pb_ratio", metric_data.get("pbAnnual"), "x"),
+                ("ps_ratio", metric_data.get("psAnnual"), "x"),
+                ("revenue_growth_yoy", metric_data.get("revenueGrowthQuarterlyYoy"), "%"),
+                ("eps_growth_yoy", metric_data.get("epsGrowthQuarterlyYoy"), "%"),
+                ("gross_margin", metric_data.get("grossMarginAnnual"), "%"),
+                ("operating_margin", metric_data.get("operatingMarginAnnual"), "%"),
+                ("net_margin", metric_data.get("netProfitMarginAnnual"), "%"),
+                ("roe", metric_data.get("roeAnnual"), "%"),
+                ("roa", metric_data.get("roaAnnual"), "%"),
+                ("debt_to_equity", metric_data.get("totalDebt/totalEquityAnnual"), "x"),
+                ("current_ratio", metric_data.get("currentRatioAnnual"), "x"),
+                ("52_week_high", metric_data.get("52WeekHigh"), "USD"),
+                ("52_week_low", metric_data.get("52WeekLow"), "USD"),
+                ("beta", metric_data.get("beta"), ""),
+                ("dividend_yield", metric_data.get("dividendYieldIndicatedAnnual"), "%"),
+            ]
+            
+            for name, value, unit in metric_mappings:
+                if value is not None:
+                    metrics.append(FinancialMetric(
+                        ticker=ticker.upper(),
+                        metric_name=name,
+                        value=float(value),
+                        unit=unit,
+                        period="TTM",
+                        period_end_date=period_end,
+                        source="Finnhub"
+                    ))
+            
+            return metrics
+            
+        except Exception as e:
+            print(f"[FinancialDataFetcher] Finnhub metrics error: {e}")
+            return self._get_demo_metrics(ticker)
+    
+    async def get_company_news(
+        self,
+        ticker: str,
+        days: int = 7
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch recent company news (Finnhub feature).
+        
+        Args:
+            ticker: Stock ticker symbol
+            days: Number of days of news history
+            
+        Returns:
+            List of news article dicts
+        """
+        if not self.finnhub_client or self.provider != DataProvider.FINNHUB:
+            return []
+        
+        try:
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=days)
+            
+            news = self.finnhub_client.company_news(
+                ticker.upper(),
+                start_date.strftime("%Y-%m-%d"),
+                end_date.strftime("%Y-%m-%d")
+            )
+            
+            return [
+                {
+                    "headline": item.get("headline", ""),
+                    "summary": item.get("summary", ""),
+                    "source": item.get("source", ""),
+                    "url": item.get("url", ""),
+                    "datetime": datetime.fromtimestamp(item.get("datetime", 0)).strftime("%Y-%m-%d %H:%M"),
+                    "sentiment": item.get("sentiment", 0)
+                }
+                for item in news[:20]  # Limit to 20 articles
+            ]
+            
+        except Exception as e:
+            print(f"[FinancialDataFetcher] Finnhub news error: {e}")
+            return []
     
     async def _get_fmp_metrics(self, ticker: str, quarters: int) -> List[FinancialMetric]:
         """Fetch key metrics from FMP."""
@@ -457,7 +573,7 @@ class FinancialDataFetcher:
         """Get information about the current data provider."""
         return {
             "provider": self.provider.value,
-            "has_alpha_vantage_key": self.alpha_vantage_key is not None,
+            "has_finnhub_key": self.finnhub_key is not None,
             "has_fmp_key": self.fmp_key is not None,
             "rate_limit": self.RATE_LIMITS.get(self.provider, "unlimited")
         }
