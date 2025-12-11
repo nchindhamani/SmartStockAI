@@ -67,24 +67,43 @@ def extract_tool_params_from_query(query: str, tool_name: str) -> dict:
     with structured output for more accurate parameter extraction.
     """
     query_upper = query.upper()
+    query_lower = query.lower()
     
-    # Common ticker patterns - look for known tickers first
+    # Company name to ticker mapping
+    company_to_ticker = {
+        "apple": "AAPL", "microsoft": "MSFT", "google": "GOOGL", "alphabet": "GOOGL",
+        "amazon": "AMZN", "meta": "META", "facebook": "META", "nvidia": "NVDA",
+        "tesla": "TSLA", "amd": "AMD", "intel": "INTC", "netflix": "NFLX",
+        "salesforce": "CRM", "oracle": "ORCL", "ibm": "IBM", "cisco": "CSCO",
+        "qualcomm": "QCOM", "broadcom": "AVGO", "adobe": "ADBE", "paypal": "PYPL"
+    }
+    
+    # Known ticker symbols
     known_tickers = ["AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "META", "NVDA", "TSLA", "AMD", "INTC", 
                      "NFLX", "CRM", "ORCL", "IBM", "CSCO", "QCOM", "TXN", "AVGO", "ADBE", "PYPL"]
     
-    # First try to find known tickers
-    tickers = [t for t in known_tickers if t in query_upper]
+    # First check for company names and convert to tickers
+    tickers = []
+    for company, ticker in company_to_ticker.items():
+        if company in query_lower:
+            tickers.append(ticker)
+    
+    # Then try to find known tickers directly
+    for t in known_tickers:
+        if t in query_upper and t not in tickers:
+            tickers.append(t)
     
     # If no known tickers found, try pattern matching
     if not tickers:
         ticker_pattern = r'\b([A-Z]{2,5})\b'
-        tickers = re.findall(ticker_pattern, query_upper)
+        found_tickers = re.findall(ticker_pattern, query_upper)
         # Filter out common words
         stop_words = {"THE", "AND", "FOR", "ARE", "FROM", "HOW", "WHAT", "WHY", "WHEN", "WITH", 
                       "LAST", "WEEK", "DROP", "RISE", "STOCK", "SHARE", "PRICE", "DID", "CAUSED",
                       "COMPARE", "BETWEEN", "QUARTER", "YEAR", "REVENUE", "GROWTH", "MARGIN",
-                      "IN", "ON", "AT", "TO", "OF", "VS", "OR", "NOT", "ALL", "CAN", "HAS", "HAD"}
-        tickers = [t for t in tickers if t not in stop_words]
+                      "IN", "ON", "AT", "TO", "OF", "VS", "OR", "NOT", "ALL", "CAN", "HAS", "HAD",
+                      "RISKS", "RISK", "KEY", "LATEST", "FILING", "CALL", "EARNINGS", "SUMMARIZE"}
+        tickers = [t for t in found_tickers if t not in stop_words]
     
     if tool_name == "earnings":
         ticker = tickers[0] if tickers else "AAPL"
