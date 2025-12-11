@@ -1,11 +1,20 @@
 # tools/earnings.py
 # Module 1: Earnings Synthesizer Tool
-# Analyzes earnings calls and 10-Q/10-K filings
+# Live RAG retrieval from ChromaDB + Gemini synthesis
 
+import os
 from typing import Literal
 from pydantic import BaseModel, Field
 from langchain_core.tools import tool
+from langchain_google_genai import ChatGoogleGenerativeAI
+from dotenv import load_dotenv
+
 from agent.state import ToolResult, Metric, Citation
+from data.vector_store import get_vector_store
+from data.sec_api import get_sec_client
+from data.metrics_store import get_metrics_store
+
+load_dotenv()
 
 
 class EarningsSummaryInput(BaseModel):
@@ -22,13 +31,44 @@ class EarningsSummaryInput(BaseModel):
     )
 
 
+# Synthesis prompt for Gemini
+SYNTHESIS_PROMPT = """You are a financial analyst AI. Based on the following SEC filing excerpts, 
+provide a concise synthesis of key insights, risks, and metrics.
+
+Company: {ticker}
+Filing Type: {filing_type}
+Quarter: {quarter}
+
+Retrieved Document Excerpts:
+{context}
+
+Instructions:
+1. Summarize the key insights from the filing (2-3 sentences)
+2. Include inline citations like [1], [2] referencing the source documents
+3. Extract 3-4 key metrics with their values
+4. Identify the main risks or concerns mentioned
+
+Respond in this exact JSON format:
+{{
+    "synthesis": "Your 2-3 sentence synthesis with [1], [2] citations...",
+    "metrics": [
+        {{"key": "Metric Name", "value": "Value", "color": "green/red/blue/yellow"}},
+        ...
+    ],
+    "risks": ["Risk 1", "Risk 2"]
+}}
+"""
+
+
 @tool(args_schema=EarningsSummaryInput)
 def get_earnings_summary(ticker: str, filing_type: str, quarter: str = "latest") -> ToolResult:
     """
     Summarize key risks and insights from earnings calls or SEC filings.
     
-    This tool retrieves and analyzes earnings transcripts or 10-Q/10-K filings
-    to extract key risks, growth drivers, and management guidance.
+    This tool performs LIVE RAG retrieval:
+    1. Queries ChromaDB for relevant filing sections
+    2. Falls back to SEC EDGAR via edgartools if needed
+    3. Synthesizes with Gemini 2.5
     
     Args:
         ticker: Stock ticker symbol
@@ -38,73 +78,133 @@ def get_earnings_summary(ticker: str, filing_type: str, quarter: str = "latest")
     Returns:
         ToolResult with synthesis, metrics, and citations
     """
-    # PLACEHOLDER: In Phase 3, this will use RAG to retrieve actual filing data
-    # For now, return structured dummy data based on the input
+    ticker = ticker.upper()
+    print(f"[Earnings Tool] Analyzing {ticker} {filing_type} ({quarter})")
     
-    filing_display = f"{filing_type} ({quarter})" if quarter != "latest" else f"Latest {filing_type}"
+    # Step 1: Try to retrieve from ChromaDB (indexed data)
+    vector_store = get_vector_store()
+    context_docs = []
+    citations = []
     
-    # Simulated analysis based on ticker
-    ticker_insights = {
-        "GOOGL": {
-            "synthesis": (
-                f"Based on {ticker}'s {filing_display}, the company reported strong cloud revenue growth "
-                "of 28% YoY [1], but flagged increased competition in the AI infrastructure space as a "
-                "key risk [2]. Management emphasized continued investment in Gemini AI capabilities "
-                "while maintaining cost discipline in other areas [1]."
-            ),
-            "metrics": [
-                Metric(key="Cloud Revenue Growth", value="+28% YoY", color_context="green"),
-                Metric(key="Operating Margin", value="32.1%", color_context="green"),
-                Metric(key="Risk Level", value="Moderate", color_context="yellow"),
-            ],
-            "citations": [
-                Citation(id=1, source_type=filing_type, source_detail=f"Alphabet Inc. {filing_display}, pg. 12-15"),
-                Citation(id=2, source_type=filing_type, source_detail=f"Alphabet Inc. {filing_display}, Risk Factors Section"),
-            ],
-        },
-        "AAPL": {
-            "synthesis": (
-                f"Apple's {filing_display} reveals continued services revenue growth of 14% YoY [1], "
-                "offsetting slower iPhone sales in China. Management highlighted Vision Pro launch "
-                "momentum but noted supply chain risks related to geopolitical tensions [2]."
-            ),
-            "metrics": [
-                Metric(key="Services Revenue", value="+14% YoY", color_context="green"),
-                Metric(key="iPhone Revenue", value="-2% YoY", color_context="red"),
-                Metric(key="Gross Margin", value="46.2%", color_context="green"),
-            ],
-            "citations": [
-                Citation(id=1, source_type=filing_type, source_detail=f"Apple Inc. {filing_display}, Revenue Breakdown"),
-                Citation(id=2, source_type=filing_type, source_detail=f"Apple Inc. {filing_display}, Risk Factors"),
-            ],
-        },
-    }
+    try:
+        # Search for relevant documents
+        results = vector_store.search_by_ticker(
+            query=f"{ticker} {filing_type} risks revenue growth management discussion",
+            ticker=ticker,
+            filing_type=filing_type if filing_type != "earnings_call" else None,
+            n_results=5
+        )
+        
+        if results["documents"]:
+            print(f"[Earnings Tool] Found {len(results['documents'])} chunks in ChromaDB")
+            for i, (doc, meta) in enumerate(zip(results["documents"], results["metadatas"])):
+                context_docs.append(f"[{i+1}] {doc[:2000]}...")
+                citations.append(Citation(
+                    id=i+1,
+                    source_type=meta.get("filing_type", filing_type),
+                    source_detail=f"{ticker} {meta.get('section_name', 'Filing')}, {meta.get('filing_date', 'Recent')}"
+                ))
+    except Exception as e:
+        print(f"[Earnings Tool] ChromaDB search failed: {e}")
     
-    # Default response for unknown tickers
-    default_response = {
-        "synthesis": (
-            f"Analysis of {ticker}'s {filing_display} indicates stable financial performance [1]. "
-            "Key areas to monitor include margin trends and competitive positioning. "
-            "No significant red flags identified in the risk factors section [2]."
-        ),
-        "metrics": [
-            Metric(key="Revenue Trend", value="Stable", color_context="blue"),
-            Metric(key="Risk Assessment", value="Low", color_context="green"),
-        ],
-        "citations": [
-            Citation(id=1, source_type=filing_type, source_detail=f"{ticker} {filing_display}, Financial Summary"),
-            Citation(id=2, source_type=filing_type, source_detail=f"{ticker} {filing_display}, Risk Factors"),
-        ],
-    }
+    # Step 2: If no indexed data, fetch from SEC EDGAR
+    if not context_docs:
+        print("[Earnings Tool] No indexed data, fetching from SEC EDGAR...")
+        sec_client = get_sec_client()
+        
+        try:
+            form_type = "10-K" if filing_type == "10-K" else "10-Q"
+            sections = sec_client.extract_key_sections(ticker, form_type)
+            
+            for i, section in enumerate(sections[:5]):
+                context_docs.append(f"[{i+1}] {section.section_name}: {section.content[:2000]}...")
+                citations.append(Citation(
+                    id=i+1,
+                    source_type=section.form_type,
+                    source_detail=f"{ticker} {section.section_name}, {section.filing_date}"
+                ))
+        except Exception as e:
+            print(f"[Earnings Tool] SEC EDGAR fetch failed: {e}")
     
-    data = ticker_insights.get(ticker.upper(), default_response)
+    # Step 3: Get metrics from SQLite
+    metrics_store = get_metrics_store()
+    metrics = []
+    
+    try:
+        db_metrics = metrics_store.get_all_metrics(ticker)
+        for m in db_metrics[:4]:
+            color = "green" if "growth" in m["metric_name"].lower() and m["metric_value"] > 0 else \
+                    "red" if m["metric_value"] < 0 else "blue"
+            metrics.append(Metric(
+                key=m["metric_name"].replace("_", " ").title(),
+                value=f"{m['metric_value']}{m['metric_unit'] or ''}",
+                color_context=color
+            ))
+    except Exception as e:
+        print(f"[Earnings Tool] Metrics fetch failed: {e}")
+    
+    # Step 4: Synthesize with Gemini
+    synthesis_text = ""
+    
+    if context_docs:
+        try:
+            llm = ChatGoogleGenerativeAI(
+                model="gemini-2.5-flash",
+                google_api_key=os.getenv("GOOGLE_API_KEY"),
+                temperature=0.3
+            )
+            
+            prompt = SYNTHESIS_PROMPT.format(
+                ticker=ticker,
+                filing_type=filing_type,
+                quarter=quarter,
+                context="\n\n".join(context_docs)
+            )
+            
+            response = llm.invoke(prompt)
+            synthesis_text = response.content
+            
+            # Try to parse JSON response for metrics
+            import json
+            try:
+                if "{" in synthesis_text:
+                    json_str = synthesis_text[synthesis_text.find("{"):synthesis_text.rfind("}")+1]
+                    parsed = json.loads(json_str)
+                    synthesis_text = parsed.get("synthesis", synthesis_text)
+                    
+                    # Add parsed metrics
+                    for m in parsed.get("metrics", []):
+                        metrics.append(Metric(
+                            key=m.get("key", ""),
+                            value=m.get("value", ""),
+                            color_context=m.get("color", "blue")
+                        ))
+            except json.JSONDecodeError:
+                pass  # Use raw synthesis
+                
+        except Exception as e:
+            print(f"[Earnings Tool] Gemini synthesis failed: {e}")
+            synthesis_text = f"Analysis of {ticker}'s {filing_type}: Unable to generate synthesis. Error: {str(e)}"
+    else:
+        synthesis_text = f"No filing data available for {ticker} {filing_type}. Please ensure the data has been indexed."
+    
+    # Ensure we have at least some metrics and citations
+    if not metrics:
+        metrics = [
+            Metric(key="Data Status", value="Limited", color_context="yellow"),
+            Metric(key="Filing Type", value=filing_type, color_context="blue"),
+        ]
+    
+    if not citations:
+        citations = [
+            Citation(id=1, source_type="System", source_detail=f"No indexed data for {ticker}")
+        ]
     
     return ToolResult(
         tool_name="get_earnings_summary",
-        success=True,
-        synthesis_text=data["synthesis"],
-        metrics=data["metrics"],
-        citations=data["citations"],
-        raw_data={"ticker": ticker, "filing_type": filing_type, "quarter": quarter}
+        success=bool(context_docs),
+        synthesis_text=synthesis_text,
+        metrics=metrics[:5],  # Limit to 5 metrics
+        citations=citations[:5],  # Limit to 5 citations
+        raw_data={"ticker": ticker, "filing_type": filing_type, "quarter": quarter, "sources": len(context_docs)}
     )
-
