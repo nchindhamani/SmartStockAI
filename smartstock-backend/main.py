@@ -1,16 +1,22 @@
 # main.py
 # SmartStock AI - FastAPI Backend Server
-# Phase 1: Foundation with hardcoded dummy responses
+# Agentic RAG API powered by LangGraph
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from models import AgentResponse, QueryRequest, Citation, Metrics
+from dotenv import load_dotenv
+
+from models import AgentResponse, QueryRequest
+from agent.graph import run_agent
+
+# Load environment variables
+load_dotenv()
 
 # Initialize FastAPI application
 app = FastAPI(
     title="SmartStock AI",
-    description="Agentic RAG API for Financial Analysis",
-    version="1.0.0"
+    description="Agentic RAG API for Financial Analysis powered by LangGraph",
+    version="2.0.0"
 )
 
 # Configure CORS for frontend communication
@@ -23,52 +29,14 @@ app.add_middleware(
 )
 
 
-# Dummy response data for Phase 1 testing
-DUMMY_RESPONSE = AgentResponse(
-    synthesis=(
-        "The stock drop was primarily linked to the announcement of a new competitor "
-        "in the low-end chip market on Tuesday [1], exacerbated by an insider trading "
-        "report filed on Wednesday [2]. This suggests market concern over long-term margin pressure."
-    ),
-    metrics_snapshot=[
-        Metrics(
-            key="Max Drop",
-            value="-5.12% on Nov 19",
-            color_context="red"
-        ),
-        Metrics(
-            key="Analyst Event",
-            value="Downgrade",
-            color_context="blue"
-        ),
-        Metrics(
-            key="Insider Event",
-            value="Sale Filing",
-            color_context="yellow"
-        )
-    ],
-    citations=[
-        Citation(
-            id=1,
-            source_type="News Article",
-            source_detail="Reuters: New Chip Competitor Enters Market, Nov 19"
-        ),
-        Citation(
-            id=2,
-            source_type="SEC Form 4",
-            source_detail="Insider Trading Filing, Nov 20, 4:30 PM EST"
-        )
-    ]
-)
-
-
 @app.get("/")
 async def root():
     """Health check endpoint."""
     return {
         "status": "healthy",
         "service": "SmartStock AI Backend",
-        "version": "1.0.0"
+        "version": "2.0.0",
+        "agent": "LangGraph Agentic RAG"
     }
 
 
@@ -77,8 +45,12 @@ async def ask_smartstock(request: QueryRequest) -> AgentResponse:
     """
     Main endpoint for SmartStock AI queries.
     
-    In Phase 1, this returns hardcoded dummy data to validate
-    the API contract and frontend rendering.
+    This endpoint uses the LangGraph agent to:
+    1. Route the query to the appropriate tool (earnings, comparison, or price_news)
+    2. Execute the tool with extracted parameters
+    3. Synthesize a structured response with citations
+    
+    The chat_id enables conversation memory for follow-up questions.
     
     Args:
         request: QueryRequest containing the user's query and chat_id
@@ -86,13 +58,42 @@ async def ask_smartstock(request: QueryRequest) -> AgentResponse:
     Returns:
         AgentResponse: Structured response with synthesis, metrics, and citations
     """
-    # Log the incoming query (for debugging)
-    print(f"[SmartStock AI] Received query: {request.query}")
-    print(f"[SmartStock AI] Chat ID: {request.chat_id}")
-    
-    # Phase 1: Return hardcoded dummy response
-    # In Phase 2, this will route to the appropriate LangGraph agent
-    return DUMMY_RESPONSE
+    try:
+        # Log the incoming query
+        print(f"[SmartStock AI] Received query: {request.query}")
+        print(f"[SmartStock AI] Chat ID: {request.chat_id}")
+        
+        # Run the LangGraph agent
+        response = await run_agent(request.query, request.chat_id)
+        
+        print(f"[SmartStock AI] Response generated successfully")
+        
+        return AgentResponse(**response)
+        
+    except Exception as e:
+        print(f"[SmartStock AI] Error: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Agent execution failed: {str(e)}"
+        )
+
+
+@app.get("/api/health")
+async def health_check():
+    """Detailed health check with agent status."""
+    return {
+        "status": "healthy",
+        "components": {
+            "api": "operational",
+            "agent": "operational",
+            "memory": "operational"
+        },
+        "tools": [
+            "get_earnings_summary",
+            "compare_financial_data", 
+            "link_price_news"
+        ]
+    }
 
 
 if __name__ == "__main__":
@@ -103,4 +104,3 @@ if __name__ == "__main__":
         port=8000,
         reload=True
     )
-

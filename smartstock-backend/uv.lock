@@ -1005,6 +1005,9 @@ version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
+    { name = "langchain-core" },
+    { name = "langchain-openai" },
+    { name = "langgraph" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "python-dotenv" },
@@ -1037,8 +1040,11 @@ dev = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.109.0" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.25.0" },
+    { name = "langchain-core", specifier = ">=1.1.3" },
     { name = "langchain-core", marker = "extra == 'langchain'", specifier = ">=0.2.0" },
+    { name = "langchain-openai", specifier = ">=1.1.1" },
     { name = "langchain-openai", marker = "extra == 'langchain'", specifier = ">=0.1.0" },
+    { name = "langgraph", specifier = ">=1.0.4" },
     { name = "langgraph", marker = "extra == 'langchain'", specifier = ">=0.1.0" },
     { name = "pydantic", specifier = ">=2.5.0" },
     { name = "pydantic-settings", specifier = ">=2.1.0" },
