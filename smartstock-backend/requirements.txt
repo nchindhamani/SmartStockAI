@@ -1,0 +1,17 @@
+# SmartStock AI Backend Dependencies
+# Phase 1: Foundation (FastAPI only)
+# LangChain/LangGraph will be added in Phase 2
+
+# Web Framework
+fastapi
+uvicorn[standard]
+
+# Data Validation & Settings
+pydantic
+pydantic-settings
+
+# File Upload Support
+python-multipart
+
+# Environment Variables
+python-dotenv
