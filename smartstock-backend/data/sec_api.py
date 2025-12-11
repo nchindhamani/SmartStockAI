@@ -1,24 +1,27 @@
 # data/sec_api.py
-# SEC Filings API Client using sec-api.io
-# Provides clean, structured SEC filing data for RAG indexing
+# SEC Filings Client using edgartools (free, open-source)
+# Provides clean SEC filing data for RAG indexing
 
 import os
 from typing import Optional, Dict, Any, List
-from datetime import datetime, timedelta
+from datetime import datetime
 from dataclasses import dataclass
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Import sec-api components
+# Import edgartools
 try:
-    from sec_api import QueryApi, ExtractorApi, RenderApi
-    SEC_API_AVAILABLE = True
+    from edgar import Company, set_identity
+    EDGAR_AVAILABLE = True
+    
+    # Set identity for SEC API (required by SEC)
+    identity = os.getenv("SEC_IDENTITY", "SmartStockAI support@smartstockai.com")
+    set_identity(identity)
+    
 except ImportError:
-    SEC_API_AVAILABLE = False
-    QueryApi = None
-    ExtractorApi = None
-    RenderApi = None
+    EDGAR_AVAILABLE = False
+    Company = None
 
 
 @dataclass
@@ -32,10 +35,9 @@ class SECFiling:
     filed_at: str
     period_of_report: str
     filing_url: str
-    document_url: str
 
 
-@dataclass
+@dataclass 
 class FilingSection:
     """A section extracted from a SEC filing."""
     ticker: str
@@ -49,98 +51,74 @@ class FilingSection:
 
 class SECApiClient:
     """
-    Client for sec-api.io - Professional SEC filing data.
+    Client for SEC EDGAR using edgartools (free, open-source).
     
     Provides:
-    - Clean, structured text extraction from 10-K, 10-Q, 8-K
-    - Section-level extraction (Risk Factors, MD&A, etc.)
-    - Full-text search across filings
-    - Rendered HTML to clean text conversion
+    - Access to 10-K, 10-Q, 8-K filings
+    - Clean text extraction
+    - Company search and filing history
     
-    This is essential for reliable RAG on SEC filings.
+    No API key required - uses public SEC EDGAR API.
     """
     
-    # Standard 10-K/10-Q sections
-    SECTIONS_10K = {
-        "1": "Business",
-        "1A": "Risk Factors",
-        "1B": "Unresolved Staff Comments",
-        "2": "Properties",
-        "3": "Legal Proceedings",
-        "4": "Mine Safety Disclosures",
-        "5": "Market for Common Equity",
-        "6": "Selected Financial Data",
-        "7": "MD&A",  # Management's Discussion and Analysis
-        "7A": "Quantitative and Qualitative Disclosures About Market Risk",
-        "8": "Financial Statements",
-        "9": "Changes in and Disagreements with Accountants",
-        "9A": "Controls and Procedures",
-        "9B": "Other Information",
-        "10": "Directors and Executive Officers",
-        "11": "Executive Compensation",
-        "12": "Security Ownership",
-        "13": "Certain Relationships",
-        "14": "Principal Accountant Fees",
-    }
+    # Key sections to extract
+    KEY_SECTIONS_10K = [
+        ("Item 1", "Business"),
+        ("Item 1A", "Risk Factors"),
+        ("Item 7", "MD&A"),
+        ("Item 7A", "Market Risk"),
+        ("Item 8", "Financial Statements"),
+    ]
     
-    SECTIONS_10Q = {
-        "part1item1": "Financial Statements",
-        "part1item2": "MD&A",
-        "part1item3": "Quantitative and Qualitative Disclosures About Market Risk",
-        "part1item4": "Controls and Procedures",
-        "part2item1": "Legal Proceedings",
-        "part2item1a": "Risk Factors",
-        "part2item2": "Unregistered Sales of Equity Securities",
-        "part2item3": "Defaults Upon Senior Securities",
-        "part2item4": "Mine Safety Disclosures",
-        "part2item5": "Other Information",
-        "part2item6": "Exhibits",
-    }
+    KEY_SECTIONS_10Q = [
+        ("Part I, Item 1", "Financial Statements"),
+        ("Part I, Item 2", "MD&A"),
+        ("Part I, Item 3", "Market Risk"),
+        ("Part II, Item 1A", "Risk Factors"),
+    ]
     
-    def __init__(self, api_key: Optional[str] = None):
-        """
-        Initialize the SEC API client.
+    def __init__(self):
+        """Initialize the SEC client."""
+        self.available = EDGAR_AVAILABLE
         
-        Args:
-            api_key: sec-api.io API key
-        """
-        self.api_key = api_key or os.getenv("SEC_API_KEY")
-        
-        if not self.api_key:
-            print("[SECApiClient] Warning: SEC_API_KEY not set")
-            self.available = False
-            return
-        
-        if not SEC_API_AVAILABLE:
-            print("[SECApiClient] Warning: sec-api package not installed")
-            self.available = False
-            return
-        
-        # Initialize API clients
-        self.query_api = QueryApi(api_key=self.api_key)
-        self.extractor_api = ExtractorApi(api_key=self.api_key)
-        self.render_api = RenderApi(api_key=self.api_key)
-        self.available = True
-        
-        print("[SECApiClient] Initialized with sec-api.io")
+        if not self.available:
+            print("[SECApiClient] Warning: edgartools not available")
+        else:
+            print("[SECApiClient] Initialized with edgartools (free)")
     
-    def search_filings(
-        self,
-        ticker: str,
-        form_types: List[str] = None,
-        start_date: str = None,
-        end_date: str = None,
-        limit: int = 10
-    ) -> List[SECFiling]:
+    def get_company(self, ticker: str) -> Optional[Any]:
         """
-        Search for SEC filings by ticker.
+        Get a Company object for the given ticker.
         
         Args:
             ticker: Stock ticker symbol
-            form_types: List of form types (e.g., ['10-K', '10-Q'])
-            start_date: Start date (YYYY-MM-DD)
-            end_date: End date (YYYY-MM-DD)
-            limit: Maximum results
+            
+        Returns:
+            Company object or None
+        """
+        if not self.available:
+            return None
+        
+        try:
+            company = Company(ticker.upper())
+            return company
+        except Exception as e:
+            print(f"[SECApiClient] Error getting company {ticker}: {e}")
+            return None
+    
+    def get_filings(
+        self,
+        ticker: str,
+        form_type: str = "10-K",
+        limit: int = 5
+    ) -> List[SECFiling]:
+        """
+        Get recent filings for a company.
+        
+        Args:
+            ticker: Stock ticker symbol
+            form_type: Form type (10-K, 10-Q, 8-K)
+            limit: Maximum number of filings
             
         Returns:
             List of SECFiling objects
@@ -148,48 +126,27 @@ class SECApiClient:
         if not self.available:
             return []
         
-        form_types = form_types or ["10-K", "10-Q"]
-        
-        # Default date range: last 2 years
-        if not end_date:
-            end_date = datetime.now().strftime("%Y-%m-%d")
-        if not start_date:
-            start_date = (datetime.now() - timedelta(days=730)).strftime("%Y-%m-%d")
-        
-        # Build query
-        form_query = " OR ".join([f'formType:"{ft}"' for ft in form_types])
-        query = {
-            "query": {
-                "query_string": {
-                    "query": f'ticker:{ticker} AND ({form_query}) AND filedAt:[{start_date} TO {end_date}]'
-                }
-            },
-            "from": "0",
-            "size": str(limit),
-            "sort": [{"filedAt": {"order": "desc"}}]
-        }
-        
         try:
-            response = self.query_api.get_filings(query)
-            filings = []
+            company = Company(ticker.upper())
+            filings = company.get_filings(form=form_type).latest(limit)
             
-            for filing in response.get("filings", []):
-                filings.append(SECFiling(
-                    ticker=filing.get("ticker", ticker).upper(),
-                    company_name=filing.get("companyName", ""),
-                    cik=filing.get("cik", ""),
-                    accession_number=filing.get("accessionNo", ""),
-                    form_type=filing.get("formType", ""),
-                    filed_at=filing.get("filedAt", ""),
-                    period_of_report=filing.get("periodOfReport", ""),
-                    filing_url=filing.get("linkToFilingDetails", ""),
-                    document_url=filing.get("linkToTxt", "")
+            result = []
+            for filing in filings:
+                result.append(SECFiling(
+                    ticker=ticker.upper(),
+                    company_name=company.name,
+                    cik=str(company.cik),
+                    accession_number=filing.accession_number,
+                    form_type=filing.form,
+                    filed_at=str(filing.filing_date),
+                    period_of_report=str(getattr(filing, 'period_of_report', '')),
+                    filing_url=filing.filing_url if hasattr(filing, 'filing_url') else ""
                 ))
             
-            return filings
+            return result
             
         except Exception as e:
-            print(f"[SECApiClient] Search error: {e}")
+            print(f"[SECApiClient] Error getting filings for {ticker}: {e}")
             return []
     
     def get_latest_filing(
@@ -202,48 +159,58 @@ class SECApiClient:
         
         Args:
             ticker: Stock ticker symbol
-            form_type: Form type (10-K, 10-Q, 8-K)
+            form_type: Form type
             
         Returns:
             SECFiling or None
         """
-        filings = self.search_filings(ticker, form_types=[form_type], limit=1)
+        filings = self.get_filings(ticker, form_type, limit=1)
         return filings[0] if filings else None
     
-    def extract_section(
+    def extract_filing_text(
         self,
-        filing_url: str,
-        section: str,
+        ticker: str,
         form_type: str = "10-K"
     ) -> Optional[str]:
         """
-        Extract a specific section from a filing.
+        Extract the full text from the latest filing.
         
         Args:
-            filing_url: URL to the filing
-            section: Section identifier (e.g., "1A" for Risk Factors)
-            form_type: Form type for section mapping
+            ticker: Stock ticker symbol
+            form_type: Form type
             
         Returns:
-            Clean text content of the section
+            Full text content or None
         """
         if not self.available:
             return None
         
         try:
-            # Use the extractor API
-            section_text = self.extractor_api.get_section(filing_url, section, form_type)
-            return section_text
+            company = Company(ticker.upper())
+            filing = company.get_filings(form=form_type).latest(1)[0]
+            
+            # Get the filing document
+            if hasattr(filing, 'document'):
+                return str(filing.document)
+            elif hasattr(filing, 'text'):
+                return filing.text
+            elif hasattr(filing, 'html'):
+                # Strip HTML if needed
+                import re
+                text = re.sub(r'<[^>]+>', ' ', filing.html)
+                text = re.sub(r'\s+', ' ', text)
+                return text.strip()
+            
+            return None
             
         except Exception as e:
-            print(f"[SECApiClient] Section extraction error: {e}")
+            print(f"[SECApiClient] Error extracting text for {ticker}: {e}")
             return None
     
     def extract_key_sections(
         self,
         ticker: str,
-        form_type: str = "10-K",
-        sections: List[str] = None
+        form_type: str = "10-K"
     ) -> List[FilingSection]:
         """
         Extract key sections from the latest filing.
@@ -251,7 +218,6 @@ class SECApiClient:
         Args:
             ticker: Stock ticker symbol
             form_type: Form type (10-K or 10-Q)
-            sections: List of section IDs to extract
             
         Returns:
             List of FilingSection objects
@@ -259,63 +225,74 @@ class SECApiClient:
         if not self.available:
             return self._get_demo_sections(ticker, form_type)
         
-        # Get latest filing
-        filing = self.get_latest_filing(ticker, form_type)
-        if not filing:
-            print(f"[SECApiClient] No {form_type} found for {ticker}")
-            return self._get_demo_sections(ticker, form_type)
-        
-        # Default sections to extract
-        if sections is None:
-            if form_type == "10-K":
-                sections = ["1", "1A", "7", "7A", "8"]  # Business, Risk Factors, MD&A, Market Risk, Financials
-            else:  # 10-Q
-                sections = ["part1item1", "part1item2", "part2item1a"]  # Financials, MD&A, Risk Factors
-        
-        extracted = []
-        section_names = self.SECTIONS_10K if form_type == "10-K" else self.SECTIONS_10Q
-        
-        for section_id in sections:
-            try:
-                content = self.extract_section(filing.filing_url, section_id, form_type)
-                
-                if content:
-                    extracted.append(FilingSection(
-                        ticker=ticker.upper(),
-                        form_type=form_type,
-                        section_name=section_names.get(section_id, f"Section {section_id}"),
-                        section_id=section_id,
-                        content=content,
-                        filing_date=filing.filed_at,
-                        source_url=filing.filing_url
-                    ))
-                    
-            except Exception as e:
-                print(f"[SECApiClient] Error extracting section {section_id}: {e}")
-        
-        return extracted if extracted else self._get_demo_sections(ticker, form_type)
-    
-    def get_full_filing_text(self, filing_url: str) -> Optional[str]:
-        """
-        Get the full text of a filing (rendered and cleaned).
-        
-        Args:
-            filing_url: URL to the filing
-            
-        Returns:
-            Full clean text of the filing
-        """
-        if not self.available:
-            return None
-        
         try:
-            # Render to clean text
-            text = self.render_api.get_filing(filing_url)
-            return text
+            company = Company(ticker.upper())
+            filings_query = company.get_filings(form=form_type)
+            
+            # latest() returns a single filing or list depending on count
+            latest = filings_query.latest(1)
+            if not latest:
+                print(f"[SECApiClient] No {form_type} found for {ticker}")
+                return self._get_demo_sections(ticker, form_type)
+            
+            # Handle both single filing and list
+            filing = latest[0] if hasattr(latest, '__getitem__') and not hasattr(latest, 'accession_number') else latest
+            filing_date = str(filing.filing_date)
+            filing_url = filing.filing_url if hasattr(filing, 'filing_url') else ""
+            
+            # Try to get the TenK or TenQ object for structured access
+            sections = []
+            
+            if form_type == "10-K" and hasattr(filing, 'obj'):
+                tenk = filing.obj()
+                if tenk:
+                    section_map = {
+                        "item1": ("1", "Business"),
+                        "item1a": ("1A", "Risk Factors"), 
+                        "item7": ("7", "MD&A"),
+                        "item7a": ("7A", "Market Risk"),
+                        "item8": ("8", "Financial Statements"),
+                    }
+                    
+                    for attr, (sec_id, sec_name) in section_map.items():
+                        try:
+                            content = getattr(tenk, attr, None)
+                            if content:
+                                sections.append(FilingSection(
+                                    ticker=ticker.upper(),
+                                    form_type=form_type,
+                                    section_name=sec_name,
+                                    section_id=sec_id,
+                                    content=str(content)[:50000],  # Limit size
+                                    filing_date=filing_date,
+                                    source_url=filing_url
+                                ))
+                        except Exception as e:
+                            print(f"[SECApiClient] Error extracting {attr}: {e}")
+            
+            # If structured extraction didn't work, get full text
+            if not sections:
+                full_text = self.extract_filing_text(ticker, form_type)
+                if full_text:
+                    # Split into chunks
+                    chunk_size = 10000
+                    for i, start in enumerate(range(0, len(full_text), chunk_size)):
+                        chunk = full_text[start:start + chunk_size]
+                        sections.append(FilingSection(
+                            ticker=ticker.upper(),
+                            form_type=form_type,
+                            section_name=f"Section {i+1}",
+                            section_id=str(i+1),
+                            content=chunk,
+                            filing_date=filing_date,
+                            source_url=filing_url
+                        ))
+            
+            return sections if sections else self._get_demo_sections(ticker, form_type)
             
         except Exception as e:
-            print(f"[SECApiClient] Render error: {e}")
-            return None
+            print(f"[SECApiClient] Error extracting sections for {ticker}: {e}")
+            return self._get_demo_sections(ticker, form_type)
     
     def _get_demo_sections(self, ticker: str, form_type: str) -> List[FilingSection]:
         """Return demo sections for testing."""
@@ -324,7 +301,7 @@ class SECApiClient:
         demo_content = {
             "AAPL": {
                 "1A": """Risk Factors:
-                
+
 Our business is subject to various risks including:
 - Supply chain disruptions and component shortages affecting iPhone and Mac production
 - Intense competition in the consumer electronics and services markets
@@ -362,14 +339,52 @@ Data Center Revenue: Data center revenue was $30.8 billion, up 154% year-over-ye
 Gross Margin: Gross margin was 74%, reflecting the premium pricing power of our AI accelerators and strong demand dynamics.
 
 Blackwell Architecture: We announced our next-generation Blackwell architecture, which delivers significant performance improvements for AI workloads."""
+            },
+            "GOOGL": {
+                "1A": """Risk Factors:
+
+Key risks to our business include:
+- Regulatory scrutiny and antitrust investigations
+- Competition in cloud services and AI
+- Privacy regulations impacting advertising business
+- Dependence on advertising revenue
+- Cybersecurity and data protection challenges""",
+                
+                "7": """Management's Discussion and Analysis:
+
+Google Cloud: Cloud revenue grew 28% to $11.4 billion, driven by AI infrastructure demand and enterprise adoption of Google Cloud Platform.
+
+Search & Advertising: Google Search revenue increased 14% year-over-year, reflecting continued strength in commercial queries and improved ad relevance through AI.
+
+YouTube: YouTube advertising revenue grew 21%, benefiting from increased viewer engagement and improved monetization of Shorts."""
+            },
+            "MSFT": {
+                "1A": """Risk Factors:
+
+Our business is subject to risks including:
+- Intense competition in cloud computing and AI
+- Cybersecurity threats and data breaches
+- Regulatory changes affecting our global operations
+- Dependence on key technology partnerships
+- Rapid technological change in AI and cloud""",
+                
+                "7": """Management's Discussion and Analysis:
+
+Intelligent Cloud: Azure and other cloud services revenue grew 29% year-over-year, driven by AI services adoption and enterprise digital transformation.
+
+Productivity and Business Processes: Office 365 Commercial revenue increased 15%, with strong growth in Microsoft 365 Copilot adoption.
+
+Gaming: Xbox content and services revenue grew 61% including Activision acquisition impact."""
             }
         }
         
         sections = []
         ticker_data = demo_content.get(ticker, demo_content.get("AAPL"))
         
+        section_names = {"1A": "Risk Factors", "7": "MD&A"}
+        
         for section_id, content in ticker_data.items():
-            section_name = self.SECTIONS_10K.get(section_id, f"Section {section_id}")
+            section_name = section_names.get(section_id, f"Section {section_id}")
             sections.append(FilingSection(
                 ticker=ticker,
                 form_type=form_type,
@@ -377,7 +392,7 @@ Blackwell Architecture: We announced our next-generation Blackwell architecture,
                 section_id=section_id,
                 content=content,
                 filing_date=datetime.now().strftime("%Y-%m-%d"),
-                source_url=f"https://sec-api.io/demo/{ticker}/{form_type}"
+                source_url=f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={ticker}"
             ))
         
         return sections
@@ -386,8 +401,9 @@ Blackwell Architecture: We announced our next-generation Blackwell architecture,
         """Get API client status."""
         return {
             "available": self.available,
-            "has_api_key": self.api_key is not None,
-            "api_provider": "sec-api.io"
+            "library": "edgartools",
+            "cost": "free",
+            "source": "SEC EDGAR"
         }
 
 
@@ -401,4 +417,3 @@ def get_sec_client() -> SECApiClient:
     if _sec_client is None:
         _sec_client = SECApiClient()
     return _sec_client
-
