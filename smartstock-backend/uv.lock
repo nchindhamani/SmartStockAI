@@ -3720,6 +3720,18 @@ wheels = [
 ]
 
 [[package]]
+name = "sec-api"
+version = "1.0.32"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/42/ab/e02578561d51df57097a1032f905552717bd56122652d5ca153dc3f32183/sec-api-1.0.32.tar.gz", hash = "sha256:a1faff4f9ff09f79508c8eacbde9d62c085b774b06f7cbb36d3f5b677128796a", size = 59559, upload-time = "2025-04-23T07:17:35.663Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e4/83/81e47a02e364a723f3534faae912e8d264649ce1f831d6aeb0856f2ce6ca/sec_api-1.0.32-py3-none-any.whl", hash = "sha256:ebafca830faf7edef80ef38c51dd6a2966dee62689485a5a4bf3e40ffe078c17", size = 24361, upload-time = "2025-04-23T07:17:33.867Z" },
+]
+
+[[package]]
 name = "sec-edgar-api"
 version = "1.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3800,6 +3812,7 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "python-multipart" },
     { name = "requests" },
+    { name = "sec-api" },
     { name = "sec-edgar-api" },
     { name = "sentence-transformers" },
     { name = "unstructured" },
@@ -3853,6 +3866,7 @@ requires-dist = [
     { name = "python-multipart", specifier = ">=0.0.6" },
     { name = "requests", specifier = ">=2.32.5" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
+    { name = "sec-api", specifier = ">=1.0.32" },
     { name = "sec-edgar-api", specifier = ">=1.1.0" },
     { name = "sentence-transformers", specifier = ">=5.1.2" },
     { name = "unstructured", specifier = ">=0.18.21" },

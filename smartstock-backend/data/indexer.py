@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from data.ticker_mapping import get_ticker_mapper, ensure_ticker_data
 from data.financial_api import get_financial_fetcher, StockPrice, FinancialMetric
 from data.document_loader import SECDocumentLoader, DemoDocumentLoader, Document
+from data.sec_api import get_sec_client, SECApiClient, FilingSection
 from data.vector_store import get_vector_store, VectorStore
 from data.metrics_store import get_metrics_store, MetricsStore
 
@@ -65,10 +66,13 @@ class SmartStockIndexer:
         self.financial_fetcher = get_financial_fetcher()
         self.metrics_store = get_metrics_store()
         
+        # SEC API client (sec-api.io) - primary source for filings
+        self.sec_client = get_sec_client()
+        
         # Vector store initialized lazily to avoid slow startup
         self._vector_store: Optional[VectorStore] = None
         
-        # Document loaders
+        # Fallback document loaders
         self.sec_loader = SECDocumentLoader(user_agent=user_agent)
         self.demo_loader = DemoDocumentLoader()
     
@@ -167,32 +171,65 @@ class SmartStockIndexer:
         cik: str,
         filing_types: List[str]
     ) -> int:
-        """Index SEC filings to vector store."""
+        """
+        Index SEC filings to vector store.
+        
+        Uses sec-api.io as primary source for clean, structured filing data.
+        Falls back to EDGAR loader or demo data if needed.
+        """
         total_docs = 0
         
         for filing_type in filing_types:
+            sections: List[FilingSection] = []
+            
             if self.use_demo_mode:
-                # Use demo loader
-                documents = self.demo_loader.load_filing(ticker, filing_type)
+                # Use demo data
+                sections = self.sec_client._get_demo_sections(ticker, filing_type)
+            elif self.sec_client.available:
+                # Use sec-api.io for clean, structured data
+                print(f"[Indexer] Fetching {filing_type} from sec-api.io...")
+                sections = self.sec_client.extract_key_sections(ticker, filing_type)
             else:
-                # Try to load from SEC (with fallback to demo)
+                # Fallback to EDGAR loader
                 try:
                     documents = await self.sec_loader.load_latest_filing(
                         cik=cik,
                         ticker=ticker,
                         filing_type=filing_type
                     )
+                    # Convert to sections format
+                    for doc in documents:
+                        sections.append(FilingSection(
+                            ticker=ticker,
+                            form_type=filing_type,
+                            section_name="Full Document",
+                            section_id="full",
+                            content=doc.content,
+                            filing_date=doc.metadata.get("filing_date", ""),
+                            source_url=doc.metadata.get("source_url", "")
+                        ))
                 except Exception as e:
-                    print(f"[Indexer] SEC load failed, using demo: {e}")
-                    documents = self.demo_loader.load_filing(ticker, filing_type)
+                    print(f"[Indexer] EDGAR load failed, using demo: {e}")
+                    sections = self.sec_client._get_demo_sections(ticker, filing_type)
             
-            if documents:
-                # Add to vector store
-                doc_texts = [doc.content for doc in documents]
-                doc_metadatas = [doc.metadata for doc in documents]
+            if sections:
+                # Add sections to vector store
+                doc_texts = [s.content for s in sections]
+                doc_metadatas = [
+                    {
+                        "ticker": s.ticker,
+                        "filing_type": s.form_type,
+                        "section_name": s.section_name,
+                        "section_id": s.section_id,
+                        "filing_date": s.filing_date,
+                        "source_url": s.source_url,
+                        "timestamp": datetime.now().timestamp()
+                    }
+                    for s in sections
+                ]
                 doc_ids = [
-                    f"{ticker}_{filing_type}_{i}_{datetime.now().timestamp()}"
-                    for i in range(len(documents))
+                    f"{ticker}_{filing_type}_{s.section_id}_{datetime.now().timestamp()}"
+                    for s in sections
                 ]
                 
                 self.vector_store.add_documents(
@@ -201,7 +238,8 @@ class SmartStockIndexer:
                     ids=doc_ids
                 )
                 
-                total_docs += len(documents)
+                total_docs += len(sections)
+                print(f"[Indexer] Indexed {len(sections)} sections from {filing_type}")
         
         return total_docs
     
