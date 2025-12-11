@@ -1,6 +1,7 @@
 # data/document_loader.py
 # SEC EDGAR Document Loader
 # Fetches and processes 10-K, 10-Q, and 8-K filings from SEC EDGAR
+# Uses 'unstructured' library for robust HTML/PDF parsing
 
 import os
 import re
@@ -8,6 +9,12 @@ import httpx
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from dataclasses import dataclass
+
+# Import unstructured for document parsing
+from unstructured.partition.html import partition_html
+from unstructured.partition.pdf import partition_pdf
+from unstructured.partition.text import partition_text
+from unstructured.chunking.title import chunk_by_title
 
 
 @dataclass
@@ -150,7 +157,7 @@ class SECDocumentLoader:
             return response.text
     
     def _clean_html(self, html_content: str) -> str:
-        """Remove HTML tags and clean up text."""
+        """Remove HTML tags and clean up text using regex (fallback)."""
         # Remove script and style elements
         html_content = re.sub(r'<script[^>]*>.*?</script>', '', html_content, flags=re.DOTALL | re.IGNORECASE)
         html_content = re.sub(r'<style[^>]*>.*?</style>', '', html_content, flags=re.DOTALL | re.IGNORECASE)
@@ -169,6 +176,106 @@ class SECDocumentLoader:
         text = text.replace('&gt;', '>')
         
         return text.strip()
+    
+    def _parse_with_unstructured(
+        self, 
+        content: str, 
+        content_type: str = "html"
+    ) -> List[str]:
+        """
+        Parse document content using the unstructured library.
+        
+        This provides superior parsing for complex SEC filings,
+        handling tables, lists, headers, and nested structures.
+        
+        Args:
+            content: Raw document content
+            content_type: Type of content ('html', 'pdf', 'text')
+            
+        Returns:
+            List of parsed text elements
+        """
+        try:
+            if content_type == "html":
+                # Parse HTML content
+                elements = partition_html(text=content)
+            elif content_type == "text":
+                # Parse plain text
+                elements = partition_text(text=content)
+            else:
+                # Fallback to text parsing
+                elements = partition_text(text=content)
+            
+            # Extract text from elements
+            texts = [str(el) for el in elements if str(el).strip()]
+            
+            return texts
+            
+        except Exception as e:
+            print(f"[SECDocumentLoader] Unstructured parsing failed: {e}")
+            # Fallback to regex-based cleaning
+            return [self._clean_html(content)]
+    
+    def _chunk_with_unstructured(
+        self,
+        content: str,
+        content_type: str = "html",
+        max_characters: int = 1000,
+        metadata: Dict[str, Any] = None
+    ) -> List[Document]:
+        """
+        Parse and chunk content using unstructured's smart chunking.
+        
+        Uses chunk_by_title to create semantically coherent chunks
+        that respect document structure (sections, headers, etc.).
+        
+        Args:
+            content: Raw document content
+            content_type: Type of content ('html', 'pdf', 'text')
+            max_characters: Maximum characters per chunk
+            metadata: Base metadata for all chunks
+            
+        Returns:
+            List of Document objects with chunked content
+        """
+        metadata = metadata or {}
+        
+        try:
+            # Parse the document
+            if content_type == "html":
+                elements = partition_html(text=content)
+            elif content_type == "text":
+                elements = partition_text(text=content)
+            else:
+                elements = partition_text(text=content)
+            
+            # Chunk by title/section for semantic coherence
+            chunks = chunk_by_title(
+                elements,
+                max_characters=max_characters,
+                combine_text_under_n_chars=200
+            )
+            
+            documents = []
+            for i, chunk in enumerate(chunks):
+                chunk_text = str(chunk).strip()
+                if chunk_text:
+                    chunk_metadata = {
+                        **metadata,
+                        "chunk_index": i,
+                        "chunk_type": type(chunk).__name__
+                    }
+                    documents.append(Document(
+                        content=chunk_text,
+                        metadata=chunk_metadata
+                    ))
+            
+            return documents
+            
+        except Exception as e:
+            print(f"[SECDocumentLoader] Unstructured chunking failed: {e}")
+            # Fallback to simple chunking
+            return self._chunk_text(self._clean_html(content), metadata)
     
     def _chunk_text(
         self,
@@ -225,10 +332,14 @@ class SECDocumentLoader:
         filing_type: str,
         filing_date: str,
         ticker: str,
-        company_name: str
+        company_name: str,
+        use_unstructured: bool = True
     ) -> List[Document]:
         """
         Load a filing and split it into chunks for vector storage.
+        
+        Uses the 'unstructured' library for intelligent parsing that
+        respects document structure (sections, tables, headers).
         
         Args:
             cik: Company CIK
@@ -238,18 +349,13 @@ class SECDocumentLoader:
             filing_date: Date of filing
             ticker: Stock ticker symbol
             company_name: Company name
+            use_unstructured: If True, use unstructured library for parsing
             
         Returns:
             List of Document chunks with metadata
         """
         # Load the raw content
         raw_content = await self.load_filing(cik, accession_number, primary_document)
-        
-        # Clean HTML if present
-        if raw_content.strip().startswith('<'):
-            text = self._clean_html(raw_content)
-        else:
-            text = raw_content
         
         # Create base metadata
         metadata = {
@@ -267,8 +373,29 @@ class SECDocumentLoader:
             "timestamp": datetime.now().timestamp()
         }
         
-        # Chunk the text
-        return self._chunk_text(text, metadata)
+        # Determine content type based on document extension
+        if primary_document.lower().endswith('.htm') or primary_document.lower().endswith('.html'):
+            content_type = "html"
+        elif primary_document.lower().endswith('.pdf'):
+            content_type = "pdf"
+        else:
+            content_type = "text"
+        
+        # Use unstructured for intelligent chunking if enabled
+        if use_unstructured:
+            return self._chunk_with_unstructured(
+                raw_content,
+                content_type=content_type,
+                max_characters=self.chunk_size,
+                metadata=metadata
+            )
+        else:
+            # Fallback to simple regex-based cleaning and chunking
+            if raw_content.strip().startswith('<'):
+                text = self._clean_html(raw_content)
+            else:
+                text = raw_content
+            return self._chunk_text(text, metadata)
     
     async def load_latest_filing(
         self,
