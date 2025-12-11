@@ -62,3 +62,8 @@ Thumbs.db
 coverage/
 .nyc_output/
 
+# Database files
+*.db
+smartstock-backend/data/chroma_db/
+smartstock-backend/data/*.db
+
