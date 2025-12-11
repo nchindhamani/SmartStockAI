@@ -105,7 +105,7 @@ def create_llm(
         if not GEMINI_AVAILABLE:
             raise ImportError("langchain-google-genai not installed. Run: uv add langchain-google-genai")
         
-        model = model or "gemini-1.5-flash"  # Fast and cost-effective
+        model = model or "gemini-2.5-flash"  # Fast and cost-effective
         print(f"[Agent] Using Google Gemini: {model}")
         
         return ChatGoogleGenerativeAI(
