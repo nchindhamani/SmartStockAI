@@ -4,6 +4,7 @@
 # Core data stores
 from data.vector_store import VectorStore, get_vector_store
 from data.metrics_store import MetricsStore, get_metrics_store
+from data.news_store import NewsStore, get_news_store
 
 # Document processing
 from data.document_loader import SECDocumentLoader, DemoDocumentLoader, Document
@@ -34,6 +35,10 @@ __all__ = [
     # Metrics Store
     "MetricsStore", 
     "get_metrics_store",
+    
+    # News Store
+    "NewsStore",
+    "get_news_store",
     
     # Document Loading
     "SECDocumentLoader",

@@ -19,7 +19,7 @@ class VectorStore:
     Stores document embeddings with metadata for:
     - SEC Filings (10-K, 10-Q)
     - Earnings Call Transcripts
-    - News Articles (with 90-day retention)
+    - News Articles (with 30-day retention)
     
     Enables semantic search across all document types.
     """
@@ -152,16 +152,23 @@ class VectorStore:
         Returns:
             Search results with documents, metadata, and distances
         """
-        where_filter = {"ticker": ticker.upper()}
+        # ChromaDB requires $and for multiple conditions
         if filing_type:
-            where_filter["filing_type"] = filing_type
+            where_filter = {
+                "$and": [
+                    {"ticker": {"$eq": ticker.upper()}},
+                    {"filing_type": {"$eq": filing_type}}
+                ]
+            }
+        else:
+            where_filter = {"ticker": {"$eq": ticker.upper()}}
         
         return self.search(query, n_results=n_results, where=where_filter)
     
     def get_recent_news(
         self,
         ticker: str,
-        days: int = 90,
+        days: int = 30,
         n_results: int = 10
     ) -> Dict[str, Any]:
         """
@@ -169,7 +176,7 @@ class VectorStore:
         
         Args:
             ticker: Stock ticker
-            days: Number of days to look back (default 90-day retention)
+            days: Number of days to look back (default 30-day retention)
             n_results: Max results to return
             
         Returns:
@@ -182,7 +189,12 @@ class VectorStore:
         results = self.search(
             query=f"{ticker} news events",
             n_results=n_results * 2,  # Get extra for filtering
-            where={"ticker": ticker.upper(), "filing_type": "news"}
+            where={
+                "$and": [
+                    {"ticker": {"$eq": ticker.upper()}},
+                    {"filing_type": {"$eq": "news"}}
+                ]
+            }
         )
         
         # Filter by date in post-processing
@@ -198,12 +210,12 @@ class VectorStore:
             "metadatas": filtered_meta[:n_results]
         }
     
-    def delete_expired_news(self, days: int = 90) -> int:
+    def delete_expired_news(self, days: int = 30) -> int:
         """
         Delete news articles older than the retention period.
         
         Args:
-            days: Retention period in days
+            days: Retention period in days (default 30)
             
         Returns:
             Number of documents deleted

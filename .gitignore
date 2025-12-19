@@ -67,3 +67,6 @@ coverage/
 smartstock-backend/data/chroma_db/
 smartstock-backend/data/*.db
 
+# News archive files
+smartstock-backend/data/news_archive/
+

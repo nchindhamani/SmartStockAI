@@ -2,9 +2,12 @@
 # SmartStock AI - FastAPI Backend Server
 # Agentic RAG API powered by LangGraph with Hybrid Storage
 
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 from dotenv import load_dotenv
 
 from models import AgentResponse, QueryRequest
@@ -12,9 +15,15 @@ from agent.graph import run_agent
 from data.vector_store import get_vector_store
 from data.metrics_store import get_metrics_store
 from data.ticker_mapping import get_ticker_mapper
+from data.db_connection import init_connection_pool, close_connection_pool
+from data.news_store import get_news_store
+from jobs.news_archival import archive_old_news
 
 # Load environment variables
 load_dotenv()
+
+# Initialize scheduler
+scheduler = BackgroundScheduler()
 
 
 @asynccontextmanager
@@ -26,10 +35,18 @@ async def lifespan(app: FastAPI):
     # Startup: Initialize data stores
     print("[SmartStock AI] Initializing data layer...")
     
+    # Initialize PostgreSQL connection pool
+    init_connection_pool()
+    print("[SmartStock AI] PostgreSQL connection pool initialized")
+    
     # Initialize metrics store with demo data
     metrics_store = get_metrics_store()
     metrics_store.seed_demo_data()
     print(f"[SmartStock AI] Metrics Store ready: {metrics_store.get_stats()}")
+    
+    # Initialize news store
+    news_store = get_news_store()
+    print(f"[SmartStock AI] News Store ready: {news_store.get_stats()}")
     
     # Initialize ticker mapper
     ticker_mapper = get_ticker_mapper()
@@ -38,12 +55,31 @@ async def lifespan(app: FastAPI):
     # Vector store initialized lazily on first use
     print("[SmartStock AI] Vector Store will initialize on first use")
     
+    # Start scheduler for news archival
+    retention_days = int(os.getenv("NEWS_RETENTION_DAYS", "30"))
+    archive_dir = os.getenv("NEWS_ARCHIVE_DIR", "./data/news_archive")
+    
+    # Schedule daily archival at 2 AM
+    scheduler.add_job(
+        archive_old_news,
+        trigger=CronTrigger(hour=2, minute=0),
+        args=[retention_days, archive_dir],
+        id="news_archival",
+        name="Archive old news articles",
+        replace_existing=True
+    )
+    scheduler.start()
+    print(f"[SmartStock AI] Scheduler started - news archival scheduled daily at 2 AM")
+    
     print("[SmartStock AI] Data layer initialization complete!")
     
     yield  # Server runs here
     
     # Shutdown: Cleanup
     print("[SmartStock AI] Shutting down...")
+    scheduler.shutdown()
+    close_connection_pool()
+    print("[SmartStock AI] Shutdown complete")
 
 
 # Initialize FastAPI application with lifespan
@@ -185,6 +221,33 @@ async def compare_companies(tickers: str, metrics: str = "revenue_growth_yoy,gro
         "metrics_requested": metric_list,
         "comparison": comparison
     }
+
+
+@app.post("/api/admin/archive-news")
+async def manual_archive_news():
+    """
+    Manually trigger news archival job.
+    
+    This endpoint allows administrators to manually trigger the news archival
+    process for testing or immediate archival needs.
+    """
+    try:
+        retention_days = int(os.getenv("NEWS_RETENTION_DAYS", "30"))
+        archive_dir = os.getenv("NEWS_ARCHIVE_DIR", "./data/news_archive")
+        
+        result = archive_old_news(retention_days, archive_dir)
+        
+        return {
+            "status": "success",
+            "message": "News archival completed",
+            "result": result
+        }
+    except Exception as e:
+        print(f"[News Archival] Error: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"News archival failed: {str(e)}"
+        )
 
 
 if __name__ == "__main__":
