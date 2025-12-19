@@ -14,6 +14,7 @@ from agent.state import ToolResult, Metric, Citation
 from data.vector_store import get_vector_store
 from data.metrics_store import get_metrics_store
 from data.financial_api import get_financial_fetcher
+from data.financial_statements_store import get_financial_statements_store
 
 load_dotenv()
 
@@ -33,26 +34,25 @@ class FinancialComparisonInput(BaseModel):
 
 
 # Synthesis prompt for comparative analysis
-COMPARISON_PROMPT = """You are a financial analyst AI. Compare the following companies based on their metrics and filing context.
+COMPARISON_PROMPT = """You are a senior investment strategist. Analyze and compare the following companies.
 
 Companies: {tickers}
-Requested Metrics: {metrics}
-Period: {period}
+Requested Focus: {metrics}
 
-STRUCTURED DATA (from database):
+STRUCTURED DATA (from premium database):
 {structured_data}
 
-QUALITATIVE CONTEXT (from SEC filings):
+QUALITATIVE CONTEXT (from SEC filings/earnings):
 {qualitative_context}
 
 Instructions:
-1. Provide a 2-3 sentence comparative analysis highlighting key differences
-2. Include inline citations [1], [2] etc. referencing the sources
-3. Focus on the metrics requested by the user
-4. Note any significant competitive advantages or concerns
+1. Provide a direct, side-by-side comparison of the companies.
+2. Address "Is it a good time to buy?" by looking at DCF upside and relative valuation (P/E).
+3. Be definitive but professional. Mention which stock shows better growth vs value characteristics.
+4. Include inline citations [1], [2] referencing the sources provided.
+5. If one stock is clearly superior in a certain metric, state it clearly.
 
-Respond with a clear, professional comparative synthesis. Include citations.
-"""
+Respond with a sophisticated investment synthesis. Include citations."""
 
 
 @tool(args_schema=FinancialComparisonInput)
@@ -63,25 +63,12 @@ def compare_financial_data(
 ) -> ToolResult:
     """
     Compare financial metrics across multiple companies using HYBRID RETRIEVAL.
-    
-    This tool performs:
-    1. SQL Query: Fetch exact metrics from SQLite/Finnhub
-    2. Vector Search: Get comparative context from ChromaDB (filings)
-    3. Synthesis: Use Gemini to generate comparative analysis
-    
-    Args:
-        tickers: List of stock symbols to compare
-        metrics: List of financial metrics to retrieve
-        period: Time period for the comparison
-    
-    Returns:
-        ToolResult with comparative analysis, metrics, and citations
     """
     tickers = [t.upper() for t in tickers]
     print(f"[Comparison Tool] Comparing {tickers} on {metrics}")
     
-    # Step 1: STRUCTURED DATA - Query SQLite and Finnhub for metrics
     metrics_store = get_metrics_store()
+    statements_store = get_financial_statements_store()
     financial_fetcher = get_financial_fetcher()
     
     structured_data = {}
@@ -92,88 +79,98 @@ def compare_financial_data(
     for ticker in tickers[:3]:  # Limit to 3 tickers
         structured_data[ticker] = {}
         
-        # Try SQLite first
+        # 1. Fetch from MetricsStore (General)
         try:
             db_metrics = metrics_store.get_all_metrics(ticker)
             for m in db_metrics:
                 metric_name = m["metric_name"]
-                if any(req.lower() in metric_name.lower() for req in metrics) or len(metrics) == 0:
+                # Match requested metrics or common important ones
+                if any(req.lower() in metric_name.lower() for req in metrics) or \
+                   metric_name in ["current_price", "pe_ratio", "revenue_growth", "gross_margin"]:
                     structured_data[ticker][metric_name] = {
                         "value": m["metric_value"],
                         "unit": m["metric_unit"] or "",
                         "period": m["period"]
                     }
         except Exception as e:
-            print(f"[Comparison Tool] SQLite error for {ticker}: {e}")
-        
-        # Supplement with Finnhub if available
-        try:
-            # Run async in sync context
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            finnhub_metrics = loop.run_until_complete(financial_fetcher.get_key_metrics(ticker))
-            loop.close()
+            print(f"[Comparison Tool] MetricsStore error for {ticker}: {e}")
             
-            for m in finnhub_metrics:
-                if m.metric_name not in structured_data[ticker]:
-                    if any(req.lower() in m.metric_name.lower() for req in metrics) or len(metrics) == 0:
-                        structured_data[ticker][m.metric_name] = {
-                            "value": m.value,
-                            "unit": m.unit,
-                            "period": m.period
-                        }
+        # 2. Fetch from FinancialStatementsStore (Premium DCF & Statements)
+        try:
+            dcf = statements_store.get_latest_dcf(ticker)
+            if dcf:
+                structured_data[ticker]["dcf_upside"] = {
+                    "value": round(dcf["upside_percent"], 2),
+                    "unit": "%",
+                    "period": "current"
+                }
+                structured_data[ticker]["intrinsic_value"] = {
+                    "value": round(dcf["dcf_value"], 2),
+                    "unit": "USD",
+                    "period": "current"
+                }
         except Exception as e:
-            print(f"[Comparison Tool] Finnhub error for {ticker}: {e}")
+            print(f"[Comparison Tool] StatementsStore error for {ticker}: {e}")
         
-        # Add to result metrics
-        for metric_name, data in list(structured_data[ticker].items())[:3]:
-            color = "green" if data["value"] > 0 else "red" if data["value"] < 0 else "blue"
-            result_metrics.append(Metric(
-                key=f"{ticker} {metric_name.replace('_', ' ').title()}",
-                value=f"{data['value']}{data['unit']}",
-                color_context=color
-            ))
+        # Format for synthesis and result metrics
+        important_keys = ["dcf_upside", "revenue_growth", "pe_ratio", "current_price", "net_margin"]
+        for key in important_keys:
+            if key in structured_data[ticker]:
+                data = structured_data[ticker][key]
+                val = data["value"]
+                unit = data["unit"]
+                
+                # Cleanup formatting for result metrics (UI)
+                formatted_val = f"${val:,.2f}" if unit == "USD" else f"{val:,.2f} {unit}"
+                if unit == "x": formatted_val = f"{val:,.2f}x"
+                if unit == "%": formatted_val = f"{val:+.2f}%"
+                
+                result_metrics.append(Metric(
+                    key=f"{ticker} {key.replace('_', ' ').title()}",
+                    value=formatted_val,
+                    color_context="green" if (key == "dcf_upside" and val > 0) or (key == "revenue_growth" and val > 0) else "red" if val < 0 else "blue"
+                ))
         
         # Add citation for this ticker's data
         citations.append(Citation(
             id=citation_id,
-            source_type="Financial Data",
-            source_detail=f"{ticker} metrics from Finnhub/Database, {period}"
+            source_type="Premium Data",
+            source_detail=f"{ticker} financials from FMP/Finnhub"
         ))
         citation_id += 1
     
-    # Step 2: QUALITATIVE CONTEXT - Vector search in ChromaDB
+    # QUALITATIVE CONTEXT - Vector search in ChromaDB
     vector_store = get_vector_store()
     qualitative_context = []
     
     for ticker in tickers[:2]:
         try:
+            # Search for competitive strategy and risks
             results = vector_store.search_by_ticker(
-                query=f"{ticker} competitive advantage strategy growth revenue comparison",
+                query=f"{ticker} competitive advantage strategy risks investment buy case",
                 ticker=ticker,
                 n_results=2
             )
             
             if results["documents"]:
                 for doc, meta in zip(results["documents"], results["metadatas"]):
-                    qualitative_context.append(f"[{citation_id}] {ticker}: {doc[:1000]}...")
+                    qualitative_context.append(f"[{citation_id}] {ticker}: {doc[:800]}...")
                     citations.append(Citation(
                         id=citation_id,
-                        source_type=meta.get("filing_type", "10-K"),
-                        source_detail=f"{ticker} {meta.get('section_name', 'Filing')}"
+                        source_type=meta.get("filing_type", "SEC Filing"),
+                        source_detail=f"{ticker} {meta.get('section_name', 'Report')}"
                     ))
                     citation_id += 1
         except Exception as e:
             print(f"[Comparison Tool] Vector search error for {ticker}: {e}")
     
-    # Step 3: SYNTHESIS with Gemini
+    # SYNTHESIS
     synthesis_text = ""
-    
     try:
         llm = ChatGoogleGenerativeAI(
             model="gemini-2.5-flash",
             google_api_key=os.getenv("GOOGLE_API_KEY"),
-            temperature=0.3
+            temperature=0.2
         )
         
         # Format structured data for prompt
@@ -186,7 +183,6 @@ def compare_financial_data(
         prompt = COMPARISON_PROMPT.format(
             tickers=", ".join(tickers),
             metrics=", ".join(metrics),
-            period=period,
             structured_data=structured_str if structured_str else "No structured metrics available",
             qualitative_context="\n\n".join(qualitative_context) if qualitative_context else "No filing context available"
         )
@@ -195,30 +191,13 @@ def compare_financial_data(
         synthesis_text = response.content
         
     except Exception as e:
-        print(f"[Comparison Tool] Gemini synthesis failed: {e}")
-        # Fallback synthesis
-        ticker_list = ", ".join(tickers)
-        synthesis_text = f"Comparative analysis of {ticker_list}: Based on available data, "
-        
-        if structured_data:
-            first_ticker = tickers[0]
-            if structured_data.get(first_ticker):
-                first_metric = list(structured_data[first_ticker].items())[0]
-                synthesis_text += f"{first_ticker} shows {first_metric[0]} of {first_metric[1]['value']}{first_metric[1]['unit']} [1]. "
-        
-        synthesis_text += "See detailed metrics below for full comparison."
-    
-    # Ensure we have citations
-    if not citations:
-        citations = [
-            Citation(id=1, source_type="System", source_detail=f"Comparison data for {', '.join(tickers)}")
-        ]
+        synthesis_text = f"Unable to generate investment comparison. Metrics found for: {', '.join(structured_data.keys())}."
     
     return ToolResult(
         tool_name="compare_financial_data",
         success=bool(structured_data),
         synthesis_text=synthesis_text,
-        metrics=result_metrics[:8],  # Limit metrics
-        citations=citations[:6],  # Limit citations
-        raw_data={"tickers": tickers, "metrics": metrics, "period": period}
+        metrics=result_metrics[:12],  # More metrics for comparison
+        citations=citations[:8],
+        raw_data={"tickers": tickers}
     )

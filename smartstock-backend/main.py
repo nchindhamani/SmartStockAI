@@ -18,6 +18,7 @@ from data.ticker_mapping import get_ticker_mapper
 from data.db_connection import init_connection_pool, close_connection_pool
 from data.news_store import get_news_store
 from jobs.news_archival import archive_old_news
+from jobs.price_archival import archive_old_prices, should_run_price_archival
 
 # Load environment variables
 load_dotenv()
@@ -57,19 +58,44 @@ async def lifespan(app: FastAPI):
     
     # Start scheduler for news archival
     retention_days = int(os.getenv("NEWS_RETENTION_DAYS", "30"))
-    archive_dir = os.getenv("NEWS_ARCHIVE_DIR", "./data/news_archive")
+    news_archive_dir = os.getenv("NEWS_ARCHIVE_DIR", "./data/news_archive")
     
-    # Schedule daily archival at 2 AM
+    # Schedule daily news archival at 2 AM
     scheduler.add_job(
         archive_old_news,
         trigger=CronTrigger(hour=2, minute=0),
-        args=[retention_days, archive_dir],
+        args=[retention_days, news_archive_dir],
         id="news_archival",
         name="Archive old news articles",
         replace_existing=True
     )
+    
+    # Start scheduler for price archival
+    price_retention_years = int(os.getenv("PRICE_RETENTION_YEARS", "5"))
+    price_archive_dir = os.getenv("PRICE_ARCHIVE_DIR", "./data/price_archive")
+    
+    # Schedule monthly price archival at 3 AM on the 1st of each month
+    # Only runs if should_run_price_archival() returns True (from 2028 onwards)
+    def conditional_price_archival():
+        """Wrapper that checks if archival should run before executing."""
+        if should_run_price_archival():
+            return archive_old_prices(price_retention_years, price_archive_dir)
+        else:
+            print("[Price Archival] Skipping - data is still fresh (will start from 2028)")
+            return {"status": "skipped", "message": "Data retention period not reached"}
+    
+    scheduler.add_job(
+        conditional_price_archival,
+        trigger=CronTrigger(day=1, hour=3, minute=0),  # 1st of each month at 3 AM
+        id="price_archival",
+        name="Archive old stock prices",
+        replace_existing=True
+    )
+    
     scheduler.start()
-    print(f"[SmartStock AI] Scheduler started - news archival scheduled daily at 2 AM")
+    print(f"[SmartStock AI] Scheduler started:")
+    print(f"  - News archival: daily at 2 AM (30-day retention)")
+    print(f"  - Price archival: monthly on 1st at 3 AM (5-year retention, starts 2028)")
     
     print("[SmartStock AI] Data layer initialization complete!")
     
@@ -247,6 +273,36 @@ async def manual_archive_news():
         raise HTTPException(
             status_code=500,
             detail=f"News archival failed: {str(e)}"
+        )
+
+
+@app.post("/api/admin/archive-prices")
+async def manual_archive_prices():
+    """
+    Manually trigger price archival job.
+    
+    This endpoint allows administrators to manually trigger the price archival
+    process for testing or immediate archival needs.
+    
+    Note: By default, this only runs from 2028 onwards, but can be manually
+    triggered earlier if needed.
+    """
+    try:
+        price_retention_years = int(os.getenv("PRICE_RETENTION_YEARS", "5"))
+        archive_dir = os.getenv("PRICE_ARCHIVE_DIR", "./data/price_archive")
+        
+        result = archive_old_prices(price_retention_years, archive_dir)
+        
+        return {
+            "status": "success",
+            "message": "Price archival completed",
+            "result": result
+        }
+    except Exception as e:
+        print(f"[Price Archival] Error: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Price archival failed: {str(e)}"
         )
 
 

@@ -13,6 +13,7 @@ from agent.state import ToolResult, Metric, Citation
 from data.vector_store import get_vector_store
 from data.sec_api import get_sec_client
 from data.metrics_store import get_metrics_store
+from data.financial_statements_store import get_financial_statements_store
 
 load_dotenv()
 
@@ -126,19 +127,37 @@ def get_earnings_summary(ticker: str, filing_type: str, quarter: str = "latest")
         except Exception as e:
             print(f"[Earnings Tool] SEC EDGAR fetch failed: {e}")
     
-    # Step 3: Get metrics from SQLite
+    # Step 3: Get metrics from database
     metrics_store = get_metrics_store()
+    statements_store = get_financial_statements_store()
     metrics = []
     
     try:
+        # Get standard metrics
         db_metrics = metrics_store.get_all_metrics(ticker)
-        for m in db_metrics[:4]:
-            color = "green" if "growth" in m["metric_name"].lower() and m["metric_value"] > 0 else \
-                    "red" if m["metric_value"] < 0 else "blue"
+        for m in db_metrics[:6]:
+            val = m["metric_value"]
+            unit = m["metric_unit"] or ""
+            formatted_val = f"${val:,.2f}" if unit == "USD" else f"{val:,.2f} {unit}"
+            if unit == "x": formatted_val = f"{val:,.2f}x"
+            if unit == "%": formatted_val = f"{val:+.2f}%"
+            
+            color = "green" if ("growth" in m["metric_name"].lower() or "margin" in m["metric_name"].lower()) and val > 0 else \
+                    "red" if val < 0 else "blue"
+            
             metrics.append(Metric(
                 key=m["metric_name"].replace("_", " ").title(),
-                value=f"{m['metric_value']}{m['metric_unit'] or ''}",
+                value=formatted_val,
                 color_context=color
+            ))
+            
+        # Get DCF if available
+        dcf = statements_store.get_latest_dcf(ticker)
+        if dcf:
+            metrics.append(Metric(
+                key="DCF Upside",
+                value=f"{dcf['upside_percent']:+.2f}%",
+                color_context="green" if dcf['upside_percent'] > 0 else "red"
             ))
     except Exception as e:
         print(f"[Earnings Tool] Metrics fetch failed: {e}")

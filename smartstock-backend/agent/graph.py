@@ -41,31 +41,31 @@ ROUTER_SYSTEM_PROMPT = """You are a query router for SmartStock AI, a financial 
 
 Analyze the user's query and determine which tool should handle it:
 
-1. "earnings" - For questions about earnings calls, 10-Q/10-K filings, risks, or company guidance
-   Examples: "Summarize risks from GOOGL earnings", "What did Apple say about iPhone sales?"
+1. "earnings" - For questions about a SINGLE company's earnings, 10-Q/10-K filings, risks, or guidance.
+   Examples: "Summarize AAPL risks", "What did Apple say about iPhone sales?"
 
-2. "comparison" - For comparing metrics across multiple companies
-   Examples: "Compare AAPL vs MSFT revenue", "Which has better margins, Google or Meta?"
+2. "comparison" - For questions comparing TWO or MORE companies, OR general investment questions like "Which is a better buy?", "Compare X and Y".
+   Examples: "Compare AAPL vs MSFT revenue", "Apple or Google, which is better?", "Is it a good time to buy Apple or Google?"
 
-3. "price_news" - For questions about stock price movements and what caused them
+3. "price_news" - For questions about stock price movements and what caused them.
    Examples: "What caused NVDA to drop 5%?", "Why did Tesla rally last week?"
 
-Respond with ONLY ONE of these exact words: earnings, comparison, price_news
-
-If the query is ambiguous, choose the most likely tool based on keywords."""
+Respond with ONLY ONE of these exact words: earnings, comparison, price_news"""
 
 
 # System prompt for the synthesizer
-SYNTHESIZER_SYSTEM_PROMPT = """You are the synthesis engine for SmartStock AI.
+SYNTHESIZER_SYSTEM_PROMPT = """You are the lead investment analyst for SmartStock AI.
 
-Your job is to take the structured data from our analysis tools and create a natural,
-conversational response that includes inline citations like [1] and [2].
+Your job is to take structured data and comparative context from our tools and create a sophisticated, 
+institutional-grade investment synthesis.
 
-The tool has already provided verified data with citations. Your response should:
-1. Be conversational and professional
-2. Include the inline citation markers exactly as provided
-3. Not make up any facts - only use what the tool provided
-4. Be concise but comprehensive
+Instructions:
+1. When multiple companies are involved, ALWAYS compare them directly.
+2. If the user asks "Is it a good time to buy?", provide a balanced perspective based on DCF valuation, growth, and risks.
+3. Use inline citations [1], [2] referencing sources.
+4. Keep it professional but clear. Do NOT say "This is not financial advice" (that is handled by the UI).
+5. Highlight which company looks stronger based on the data.
+6. Clean up numbers: round to 2 decimals, use '$' for currency, and add spaces between values and units.
 
 Tool output will be provided. Format your response naturally."""
 
@@ -135,9 +135,6 @@ def create_llm(
 def extract_tool_params_from_query(query: str, tool_name: str) -> dict:
     """
     Extract tool parameters from the user's query using regex patterns.
-    
-    This is a simple extraction - in production, you'd use the LLM
-    with structured output for more accurate parameter extraction.
     """
     query_upper = query.upper()
     query_lower = query.lower()
@@ -155,29 +152,30 @@ def extract_tool_params_from_query(query: str, tool_name: str) -> dict:
     known_tickers = ["AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "META", "NVDA", "TSLA", "AMD", "INTC", 
                      "NFLX", "CRM", "ORCL", "IBM", "CSCO", "QCOM", "TXN", "AVGO", "ADBE", "PYPL"]
     
-    # First check for company names and convert to tickers
+    # Extract all mentioned tickers
     tickers = []
+    
+    # 1. Check company names
     for company, ticker in company_to_ticker.items():
-        if company in query_lower:
+        if company in query_lower and ticker not in tickers:
             tickers.append(ticker)
     
-    # Then try to find known tickers directly
+    # 2. Check known tickers
     for t in known_tickers:
         if t in query_upper and t not in tickers:
             tickers.append(t)
-    
-    # If no known tickers found, try pattern matching
+            
+    # 3. Pattern match for 2-5 letter uppercase words
     if not tickers:
         ticker_pattern = r'\b([A-Z]{2,5})\b'
         found_tickers = re.findall(ticker_pattern, query_upper)
-        # Filter out common words
         stop_words = {"THE", "AND", "FOR", "ARE", "FROM", "HOW", "WHAT", "WHY", "WHEN", "WITH", 
                       "LAST", "WEEK", "DROP", "RISE", "STOCK", "SHARE", "PRICE", "DID", "CAUSED",
                       "COMPARE", "BETWEEN", "QUARTER", "YEAR", "REVENUE", "GROWTH", "MARGIN",
                       "IN", "ON", "AT", "TO", "OF", "VS", "OR", "NOT", "ALL", "CAN", "HAS", "HAD",
-                      "RISKS", "RISK", "KEY", "LATEST", "FILING", "CALL", "EARNINGS", "SUMMARIZE"}
+                      "RISKS", "RISK", "KEY", "LATEST", "FILING", "CALL", "EARNINGS", "SUMMARIZE", "BUY"}
         tickers = [t for t in found_tickers if t not in stop_words]
-    
+
     if tool_name == "earnings":
         ticker = tickers[0] if tickers else "AAPL"
         filing_type = "10-Q"
@@ -188,15 +186,18 @@ def extract_tool_params_from_query(query: str, tool_name: str) -> dict:
         return {"ticker": ticker, "filing_type": filing_type, "quarter": "latest"}
     
     elif tool_name == "comparison":
-        if len(tickers) >= 2:
-            comparison_tickers = tickers[:2]
-        else:
-            comparison_tickers = ["AAPL", "MSFT"]
-        metrics = ["revenue_growth", "margins"]
+        # Return ALL detected tickers, or default to AAPL/MSFT if none
+        comparison_tickers = tickers if tickers else ["AAPL", "MSFT"]
+        
+        # Determine metrics to fetch
+        metrics = ["revenue_growth", "margins", "pe_ratio", "dcf_valuation"]
         if "CAPEX" in query_upper:
             metrics.append("capex")
         if "REVENUE" in query_upper:
             metrics = ["revenue_growth"] + metrics
+        if "BUY" in query_upper or "GOOD TIME" in query_upper:
+            metrics = ["dcf_valuation", "revenue_growth", "pe_ratio"]
+            
         return {"tickers": comparison_tickers, "metrics": metrics, "period": "latest_quarter"}
     
     elif tool_name == "price_news":
@@ -207,7 +208,6 @@ def extract_tool_params_from_query(query: str, tool_name: str) -> dict:
         elif "QUARTER" in query_upper:
             date_range = "last_quarter"
         
-        # Try to extract percentage
         pct_match = re.search(r'(\d+(?:\.\d+)?)\s*%', query)
         threshold = float(pct_match.group(1)) if pct_match else 3.0
         
@@ -223,22 +223,20 @@ def extract_tool_params_from_query(query: str, tool_name: str) -> dict:
 def router_node(state: AgentState) -> dict:
     """
     Router node: Determines which tool to use based on the query.
-    
-    Uses the LLM to classify the query into one of three categories.
     """
     query = state["current_query"]
     
-    # For demo mode without API key, use keyword-based routing
-    if os.getenv("OPENAI_API_KEY", "demo-key") == "demo-key":
+    # For demo mode or fallback
+    if os.getenv("GOOGLE_API_KEY") is None and os.getenv("OPENAI_API_KEY") is None:
         query_lower = query.lower()
-        if any(word in query_lower for word in ["compare", "vs", "versus", "between"]):
+        if any(word in query_lower for word in ["compare", "vs", "versus", "between", " or ", " better buy"]):
             return {"selected_tool": "comparison"}
         elif any(word in query_lower for word in ["drop", "rise", "rally", "crash", "price", "caused", "why did"]):
             return {"selected_tool": "price_news"}
         else:
             return {"selected_tool": "earnings"}
     
-    # With API key, use LLM for routing
+    # Use LLM for routing
     llm = create_llm(temperature=0.0)
     messages = [
         SystemMessage(content=ROUTER_SYSTEM_PROMPT),
@@ -248,11 +246,13 @@ def router_node(state: AgentState) -> dict:
     response = llm.invoke(messages)
     tool_choice = response.content.strip().lower()
     
-    # Validate the response
-    valid_tools = ["earnings", "comparison", "price_news"]
-    if tool_choice not in valid_tools:
-        tool_choice = "earnings"  # Default fallback
-    
+    # Extract just the tool name if the LLM returned more text
+    for tool in ["earnings", "comparison", "price_news"]:
+        if tool in tool_choice:
+            tool_choice = tool
+            break
+            
+    print(f"[Agent] Router selected tool: {tool_choice}")
     return {"selected_tool": tool_choice}
 
 

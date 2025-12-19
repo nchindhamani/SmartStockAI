@@ -33,6 +33,18 @@ NEWS_RETENTION_DAYS=30
 NEWS_ARCHIVE_DIR=./data/news_archive
 ```
 
+### Price Data Retention Configuration
+
+```env
+# Number of years to retain stock prices (default: 5)
+PRICE_RETENTION_YEARS=5
+
+# Directory to store archived price CSV files (default: ./data/price_archive)
+PRICE_ARCHIVE_DIR=./data/price_archive
+```
+
+**Note:** Price archival runs monthly starting from 2028 onwards (or earlier if data older than 5 years exists).
+
 ## Optional Environment Variables
 
 These are already configured in your existing `.env` file for other services:
@@ -62,6 +74,7 @@ DATABASE_URL=postgresql://postgres:password@localhost:5432/smartstock
 
 When deploying to Railway:
 1. Railway automatically provides `DATABASE_URL` as an environment variable
-2. Make sure to set `NEWS_RETENTION_DAYS` and `NEWS_ARCHIVE_DIR` if you want to override defaults
-3. The archive directory will be created automatically if it doesn't exist
+2. Make sure to set `NEWS_RETENTION_DAYS`, `NEWS_ARCHIVE_DIR`, `PRICE_RETENTION_YEARS`, and `PRICE_ARCHIVE_DIR` if you want to override defaults
+3. The archive directories will be created automatically if they don't exist
+4. Price archival is scheduled to run monthly starting from 2028 (or earlier if old data exists)
 

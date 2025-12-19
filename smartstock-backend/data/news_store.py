@@ -25,7 +25,7 @@ class NewsStore:
         with get_connection() as conn:
             cursor = conn.cursor()
             
-            # News articles table
+            # News articles table - URL can be NULL but must be unique when present
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS news_articles (
                     id SERIAL PRIMARY KEY,
@@ -39,6 +39,19 @@ class NewsStore:
                     chroma_id VARCHAR(255),
                     metadata JSONB
                 )
+            """)
+            
+            # Unique constraint on URL (only for non-NULL URLs)
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_news_url_unique 
+                ON news_articles(url) WHERE url IS NOT NULL
+            """)
+            
+            # Unique constraint on (ticker, headline, published_at) for all records
+            # This serves as the primary deduplication key
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_news_composite_unique 
+                ON news_articles(ticker, headline, published_at)
             """)
             
             # Create indexes optimized for ±24hr temporal queries
@@ -99,24 +112,64 @@ class NewsStore:
             # Convert metadata dict to JSON string for JSONB column
             metadata_json = json.dumps(metadata) if metadata else None
             
-            cursor.execute("""
-                INSERT INTO news_articles
-                (ticker, headline, content, source, url, published_at, chroma_id, metadata)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)
-                RETURNING id
-            """, (
-                ticker.upper(),
-                headline,
-                content,
-                source,
-                url,
-                published_at,
-                chroma_id,
-                metadata_json
-            ))
-            news_id = cursor.fetchone()[0]
-            conn.commit()
-            return news_id
+            # Truncate headline for consistent matching (first 500 chars)
+            headline_truncated = headline[:500] if headline else ""
+            
+            # Use composite key (ticker, headline, published_at) for deduplication
+            # This handles both URL and non-URL cases consistently
+            try:
+                cursor.execute("""
+                    INSERT INTO news_articles
+                    (ticker, headline, content, source, url, published_at, chroma_id, metadata)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                    ON CONFLICT (ticker, headline, published_at)
+                    DO UPDATE SET
+                        content = COALESCE(EXCLUDED.content, news_articles.content),
+                        url = COALESCE(EXCLUDED.url, news_articles.url),
+                        metadata = EXCLUDED.metadata,
+                        chroma_id = COALESCE(EXCLUDED.chroma_id, news_articles.chroma_id)
+                    RETURNING id
+                """, (
+                    ticker.upper(),
+                    headline_truncated,
+                    content,
+                    source,
+                    url,
+                    published_at,
+                    chroma_id,
+                    metadata_json
+                ))
+                
+                result = cursor.fetchone()
+                news_id = result[0] if result else None
+                conn.commit()
+                return news_id
+            except Exception as e:
+                conn.rollback()
+                # If composite constraint doesn't exist, try without ON CONFLICT
+                try:
+                    cursor.execute("""
+                        INSERT INTO news_articles
+                        (ticker, headline, content, source, url, published_at, chroma_id, metadata)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                        RETURNING id
+                    """, (
+                        ticker.upper(),
+                        headline_truncated,
+                        content,
+                        source,
+                        url,
+                        published_at,
+                        chroma_id,
+                        metadata_json
+                    ))
+                    result = cursor.fetchone()
+                    news_id = result[0] if result else None
+                    conn.commit()
+                    return news_id
+                except:
+                    conn.rollback()
+                    return None
     
     def get_recent_news(
         self,
