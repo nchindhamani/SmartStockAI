@@ -3,6 +3,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Message, AgentResponse } from '@/types';
 import RichAgentResponse from '@/components/RichAgentResponse';
+import { Sparkles, TrendingUp, BarChart3, Zap, FileText, Settings } from 'lucide-react';
 
 // Suggested prompts for the home screen
 const SUGGESTED_PROMPTS = [
@@ -100,6 +101,12 @@ export default function SmartStockAI() {
     setError(null);
   };
 
+  const clearChat = () => {
+    setMessages([]);
+    setError(null);
+    inputRef.current?.focus();
+  };
+
   // Determine layout state
   const hasMessages = messages.length > 0;
 
@@ -108,15 +115,42 @@ export default function SmartStockAI() {
   // ============================================
   if (!hasMessages) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-600 via-slate-700 to-slate-800 flex items-center justify-center p-4">
+      <div className="min-h-screen bg-gradient-to-br from-neutral-50 via-primary-50/30 to-neutral-100">
+        {/* Modern Header */}
+        <header className="border-b border-neutral-200 bg-white/80 backdrop-blur-lg sticky top-0 z-50">
+          <div className="max-w-7xl mx-auto px-6 py-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-gradient-to-br from-primary-600 to-primary-400 rounded-xl flex items-center justify-center shadow-medium">
+                  <TrendingUp className="w-6 h-6 text-white" />
+                </div>
+                <div>
+                  <h1 className="text-xl font-bold text-neutral-900">SmartStock AI</h1>
+                  <p className="text-xs text-neutral-500">Enterprise Financial Intelligence</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-4">
+                <button className="text-sm text-neutral-600 hover:text-neutral-900 transition-colors flex items-center gap-2">
+                  <FileText className="w-4 h-4" />
+                  Docs
+                </button>
+                <button className="text-sm text-neutral-600 hover:text-neutral-900 transition-colors flex items-center gap-2">
+                  <Settings className="w-4 h-4" />
+                  Settings
+                </button>
+              </div>
+            </div>
+          </div>
+        </header>
+
         {/* Error Banner */}
         {error && (
-          <div className="fixed top-4 left-1/2 transform -translate-x-1/2 z-50 animate-fade-in">
-            <div className="bg-red-100 border border-red-400 text-red-700 px-6 py-3 rounded-lg shadow-lg flex items-center gap-3">
-              <span className="text-sm">{error}</span>
+          <div className="fixed top-20 left-1/2 transform -translate-x-1/2 z-50 animate-fade-in max-w-md w-full mx-4">
+            <div className="bg-error-50 border-2 border-error-500 text-error-700 px-6 py-4 rounded-xl shadow-large flex items-center justify-between">
+              <span className="text-sm font-medium">{error}</span>
               <button
                 onClick={dismissError}
-                className="text-red-500 hover:text-red-700 font-bold"
+                className="text-error-500 hover:text-error-700 font-bold text-xl leading-none ml-4"
               >
                 ×
               </button>
@@ -124,78 +158,99 @@ export default function SmartStockAI() {
           </div>
         )}
 
-        {/* Centered Card */}
-        <div className="w-full max-w-2xl">
-          <div className="bg-brand-darker rounded-3xl shadow-2xl p-8 md:p-12">
-            {/* Site Title */}
-            <h1 className="text-4xl md:text-5xl font-bold text-white mb-10 italic">
-              SmartStock AI
-            </h1>
+        {/* Hero Section */}
+        <div className="flex items-center justify-center min-h-[calc(100vh-80px)] p-6">
+          <div className="w-full max-w-4xl">
+            {/* Hero Card */}
+            <div className="bg-white rounded-3xl shadow-large border border-neutral-200 p-12 md:p-16 animate-fade-in">
+              {/* Badge */}
+              <div className="inline-flex items-center gap-2 px-4 py-2 bg-primary-50 text-primary-700 rounded-full text-sm font-medium mb-8">
+                <Zap className="w-4 h-4" />
+                <span>Powered by Advanced AI</span>
+              </div>
 
-            {/* Query Section */}
-            <div className="space-y-6">
-              <p className="text-gray-300 text-lg">
-                Ask the Agent a complex financial query...
+              {/* Title */}
+              <h1 className="text-5xl md:text-6xl font-bold text-neutral-900 mb-4 leading-tight">
+                Ask Complex Financial
+                <span className="block gradient-text">Questions</span>
+              </h1>
+              
+              <p className="text-xl text-neutral-600 mb-10 max-w-2xl">
+                Get instant, data-driven insights powered by real-time market data, 
+                SEC filings, and advanced AI analysis.
               </p>
 
-              {/* Large Search Bar */}
-              <form onSubmit={handleSubmit} className="relative">
-                <input
-                  ref={inputRef}
-                  type="text"
-                  value={inputValue}
-                  onChange={(e) => setInputValue(e.target.value)}
-                  placeholder="Ask the Agent a MSFT financial query..."
-                  disabled={isLoading}
-                  className="w-full px-5 py-4 pr-14 text-gray-800 bg-white rounded-xl shadow-md focus:ring-2 focus:ring-blue-400 transition-shadow disabled:opacity-50"
-                />
-                <button
-                  type="submit"
-                  disabled={isLoading || !inputValue.trim()}
-                  className="absolute right-2 top-1/2 transform -translate-y-1/2 w-10 h-10 bg-brand-dark rounded-lg flex items-center justify-center hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {isLoading ? (
-                    <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  ) : (
-                    <svg
-                      className="w-5 h-5 text-white"
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth={2}
-                        d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-                      />
-                    </svg>
-                  )}
-                </button>
+              {/* Enhanced Search Bar */}
+              <form onSubmit={handleSubmit} className="relative mb-8">
+                <div className="relative">
+                  <input
+                    ref={inputRef}
+                    type="text"
+                    value={inputValue}
+                    onChange={(e) => setInputValue(e.target.value)}
+                    placeholder="Compare AAPL vs MSFT revenue growth..."
+                    disabled={isLoading}
+                    className="w-full px-6 py-5 pr-16 text-lg bg-neutral-50 border-2 border-neutral-200 rounded-2xl 
+                             input-focus transition-all duration-200 disabled:opacity-50
+                             placeholder:text-neutral-400"
+                  />
+                  <button
+                    type="submit"
+                    disabled={isLoading || !inputValue.trim()}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 w-12 h-12 bg-primary-600 rounded-xl 
+                             flex items-center justify-center hover:bg-primary-700 hover:shadow-medium
+                             transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed
+                             active:scale-95"
+                  >
+                    {isLoading ? (
+                      <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    ) : (
+                      <Sparkles className="w-5 h-5 text-white" />
+                    )}
+                  </button>
+                </div>
               </form>
 
-              {/* Suggested Prompts */}
-              <div className="flex flex-wrap gap-3 mt-6">
-                {SUGGESTED_PROMPTS.map((prompt, index) => (
-                  <button
-                    key={index}
-                    onClick={() => handlePromptClick(prompt)}
-                    disabled={isLoading}
-                    className="px-4 py-2.5 bg-brand-dark text-white text-sm rounded-full hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {prompt}
-                  </button>
-                ))}
+              {/* Enhanced Suggested Prompts */}
+              <div>
+                <p className="text-sm font-medium text-neutral-500 mb-4 flex items-center gap-2">
+                  <BarChart3 className="w-4 h-4" />
+                  Try these examples:
+                </p>
+                <div className="flex flex-wrap gap-3">
+                  {SUGGESTED_PROMPTS.map((prompt, index) => (
+                    <button
+                      key={index}
+                      onClick={() => handlePromptClick(prompt)}
+                      disabled={isLoading}
+                      className="px-5 py-2.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 
+                               rounded-xl text-sm font-medium transition-all duration-200
+                               hover:shadow-soft active:scale-95 disabled:opacity-50
+                               border border-neutral-200"
+                    >
+                      {prompt}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
-          </div>
-        </div>
 
-        {/* Decorative Star */}
-        <div className="fixed bottom-8 right-8 text-white/20">
-          <svg className="w-8 h-8" fill="currentColor" viewBox="0 0 24 24">
-            <path d="M12 2L9.19 8.63L2 9.24L7.46 13.97L5.82 21L12 17.27L18.18 21L16.54 13.97L22 9.24L14.81 8.63L12 2Z" />
-          </svg>
+            {/* Feature Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-8">
+              {[
+                { icon: TrendingUp, title: 'Real-time Data', desc: 'Live market insights' },
+                { icon: BarChart3, title: 'Deep Analysis', desc: 'AI-powered research' },
+                { icon: Zap, title: 'Instant Answers', desc: 'Get insights in seconds' },
+              ].map((feature, i) => (
+                <div key={i} className="bg-white/60 backdrop-blur-sm rounded-2xl p-6 border border-neutral-200 
+                                      card-hover animate-fade-in" style={{ animationDelay: `${i * 0.1}s` }}>
+                  <feature.icon className="w-8 h-8 text-primary-600 mb-3" />
+                  <h3 className="font-semibold text-neutral-900 mb-1">{feature.title}</h3>
+                  <p className="text-sm text-neutral-600">{feature.desc}</p>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -205,21 +260,33 @@ export default function SmartStockAI() {
   // LAYOUT STATE 2: Response/Follow-up Screen
   // ============================================
   return (
-    <div className="flex flex-col h-screen bg-chat-bg">
-      {/* Fixed Header */}
-      <header className="flex-shrink-0 bg-brand-dark px-6 py-4 shadow-md">
-        <h1 className="text-2xl md:text-3xl font-bold text-white italic text-center">
-          SmartStock AI
-        </h1>
+    <div className="flex flex-col h-screen bg-neutral-50">
+      {/* Modern Header */}
+      <header className="flex-shrink-0 bg-white border-b border-neutral-200 px-6 py-4 shadow-soft">
+        <div className="max-w-7xl mx-auto flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 bg-gradient-to-br from-primary-600 to-primary-400 rounded-lg flex items-center justify-center shadow-soft">
+              <TrendingUp className="w-5 h-5 text-white" />
+            </div>
+            <h1 className="text-xl font-bold text-neutral-900">SmartStock AI</h1>
+          </div>
+          <button 
+            onClick={clearChat}
+            className="text-sm text-neutral-600 hover:text-neutral-900 transition-colors px-4 py-2 
+                     hover:bg-neutral-100 rounded-lg"
+          >
+            New Chat
+          </button>
+        </div>
       </header>
 
       {/* Error Banner */}
       {error && (
-        <div className="flex-shrink-0 bg-red-100 border-b border-red-400 text-red-700 px-6 py-3 flex items-center justify-between">
-          <span className="text-sm">{error}</span>
+        <div className="flex-shrink-0 bg-error-50 border-b-2 border-error-500 text-error-700 px-6 py-3 flex items-center justify-between">
+          <span className="text-sm font-medium">{error}</span>
           <button
             onClick={dismissError}
-            className="text-red-500 hover:text-red-700 font-bold ml-4"
+            className="text-error-500 hover:text-error-700 font-bold text-xl leading-none ml-4"
           >
             ×
           </button>
@@ -227,42 +294,51 @@ export default function SmartStockAI() {
       )}
 
       {/* Scrollable Chat Area */}
-      <main className="flex-grow overflow-y-auto px-4 md:px-8 py-6">
+      <main className="flex-grow overflow-y-auto scrollbar-thin px-4 md:px-8 py-8">
         <div className="max-w-4xl mx-auto space-y-6">
-          {messages.map((message) => (
+          {messages.map((message, index) => (
             <div
               key={message.id}
-              className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'} animate-fade-in`}
+              className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'} 
+                        animate-slide-up`}
+              style={{ animationDelay: `${index * 0.05}s` }}
             >
               {message.role === 'user' ? (
                 // User Bubble
                 <div className="max-w-[85%] md:max-w-[70%]">
-                  <div className="bg-user-bubble text-white px-5 py-3 rounded-2xl rounded-br-md shadow-md">
-                    <p className="text-sm md:text-base">{message.content}</p>
+                  <div className="bg-primary-600 text-white px-6 py-4 rounded-2xl rounded-br-md 
+                                shadow-medium">
+                    <p className="text-base leading-relaxed">{message.content}</p>
                   </div>
                 </div>
               ) : (
                 // Assistant Bubble with Rich Response
                 <div className="max-w-[95%] md:max-w-[85%] w-full">
-                  <div className="bg-white border-l-4 border-assistant-border px-5 py-4 rounded-lg shadow-md">
-                    {message.agentResponse ? (
-                      <RichAgentResponse response={message.agentResponse} />
-                    ) : (
-                      <p className="text-gray-800">{message.content}</p>
-                    )}
+                  <div className="bg-white border border-neutral-200 rounded-2xl shadow-soft 
+                                overflow-hidden">
+                    <div className="px-6 py-5">
+                      {message.agentResponse ? (
+                        <RichAgentResponse response={message.agentResponse} />
+                      ) : (
+                        <p className="text-neutral-800 leading-relaxed">{message.content}</p>
+                      )}
+                    </div>
                   </div>
                 </div>
               )}
             </div>
           ))}
 
-          {/* Loading Indicator */}
+          {/* Enhanced Loading Indicator */}
           {isLoading && (
             <div className="flex justify-start animate-fade-in">
-              <div className="bg-white border-l-4 border-assistant-border px-5 py-4 rounded-lg shadow-md">
-                <div className="flex items-center gap-3">
-                  <div className="w-5 h-5 border-2 border-brand-dark border-t-transparent rounded-full animate-spin" />
-                  <span className="text-gray-600 text-sm">Analyzing your query...</span>
+              <div className="bg-white border border-neutral-200 rounded-2xl shadow-soft px-6 py-5">
+                <div className="flex items-center gap-4">
+                  <div className="w-6 h-6 border-2 border-primary-600 border-t-transparent rounded-full animate-spin" />
+                  <div>
+                    <p className="text-sm font-medium text-neutral-900">Analyzing your query...</p>
+                    <p className="text-xs text-neutral-500 mt-1">This may take a few seconds</p>
+                  </div>
                 </div>
               </div>
             </div>
@@ -273,46 +349,43 @@ export default function SmartStockAI() {
         </div>
       </main>
 
-      {/* Fixed Footer */}
-      <footer className="flex-shrink-0 bg-brand-dark px-4 md:px-8 py-4 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)]">
+      {/* Enhanced Footer */}
+      <footer className="flex-shrink-0 bg-white border-t border-neutral-200 px-4 md:px-8 py-5 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)]">
         <div className="max-w-4xl mx-auto">
           <form onSubmit={handleSubmit} className="relative">
-            <input
-              ref={inputRef}
-              type="text"
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              placeholder="Ask a follow-up question or start a new query..."
-              disabled={isLoading}
-              className="w-full px-5 py-4 pr-14 text-gray-800 bg-white rounded-xl shadow-md focus:ring-2 focus:ring-blue-300 transition-shadow disabled:opacity-50"
-            />
-            <button
-              type="submit"
-              disabled={isLoading || !inputValue.trim()}
-              className="absolute right-2 top-1/2 transform -translate-y-1/2 w-10 h-10 bg-white border-2 border-brand-dark rounded-full flex items-center justify-center hover:bg-gray-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {isLoading ? (
-                <div className="w-5 h-5 border-2 border-brand-dark border-t-transparent rounded-full animate-spin" />
-              ) : (
-                <svg
-                  className="w-5 h-5 text-brand-dark"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-                  />
-                </svg>
-              )}
-            </button>
+            <div className="relative">
+              <input
+                ref={inputRef}
+                type="text"
+                value={inputValue}
+                onChange={(e) => setInputValue(e.target.value)}
+                placeholder="Ask a follow-up question..."
+                disabled={isLoading}
+                className="w-full px-6 py-4 pr-14 text-base bg-neutral-50 border-2 border-neutral-200 
+                         rounded-2xl input-focus transition-all duration-200 disabled:opacity-50
+                         placeholder:text-neutral-400"
+              />
+              <button
+                type="submit"
+                disabled={isLoading || !inputValue.trim()}
+                className="absolute right-3 top-1/2 -translate-y-1/2 w-11 h-11 bg-primary-600 rounded-xl 
+                         flex items-center justify-center hover:bg-primary-700 hover:shadow-medium
+                         transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed
+                         active:scale-95"
+              >
+                {isLoading ? (
+                  <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                ) : (
+                  <Sparkles className="w-5 h-5 text-white" />
+                )}
+              </button>
+            </div>
+            <p className="text-xs text-neutral-500 mt-3 text-center">
+              SmartStock AI can make mistakes. Verify important information.
+            </p>
           </form>
         </div>
       </footer>
     </div>
   );
 }
-
