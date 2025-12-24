@@ -72,7 +72,9 @@ async def fetch_stock_prices(ticker: str, days: int = 365, fetcher=None, session
                 low=price.low,
                 close=price.close,
                 volume=price.volume,
-                adjusted_close=price.adjusted_close
+                change=price.change_percent,
+                change_percent=price.change_percent,
+                vwap=price.vwap
             )
             if success:
                 stored_count += 1

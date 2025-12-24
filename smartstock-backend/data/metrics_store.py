@@ -5,6 +5,7 @@
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from data.db_connection import get_connection
+import psycopg2.extras
 
 
 class MetricsStore:
@@ -104,6 +105,40 @@ class MetricsStore:
                 ON analyst_ratings(ticker)
             """)
             
+            # Stock prices table (matches FMP /historical-price-eod/full response exactly)
+            # Note: This table replaces the old stock_prices table with enhanced fields
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS stock_prices (
+                    ticker VARCHAR(10) NOT NULL,
+                    date DATE NOT NULL,
+                    open DECIMAL(12,4),
+                    high DECIMAL(12,4),
+                    low DECIMAL(12,4),
+                    close DECIMAL(12,4),
+                    volume BIGINT,
+                    change DECIMAL(12,4),
+                    change_percent DECIMAL(12,6),
+                    vwap DECIMAL(12,4),
+                    index_name VARCHAR(100),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (ticker, date)
+                )
+            """)
+            
+            # Indexes for stock_prices
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_stock_prices_ticker_date 
+                ON stock_prices(ticker, date)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_stock_prices_index_name 
+                ON stock_prices(index_name)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_stock_prices_date 
+                ON stock_prices(date)
+            """)
+            
             conn.commit()
     
     # ==========================================
@@ -119,15 +154,18 @@ class MetricsStore:
         low: float,
         close: float,
         volume: int,
-        adjusted_close: Optional[float] = None
+        change: Optional[float] = None,
+        change_percent: Optional[float] = None,
+        vwap: Optional[float] = None,
+        index_name: Optional[str] = None
     ) -> bool:
         """Add or update a stock price record."""
         with get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO stock_prices 
-                (ticker, date, open, high, low, close, volume, adjusted_close)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                (ticker, date, open, high, low, close, volume, change, change_percent, vwap, index_name)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (ticker, date) 
                 DO UPDATE SET
                     open = EXCLUDED.open,
@@ -135,8 +173,11 @@ class MetricsStore:
                     low = EXCLUDED.low,
                     close = EXCLUDED.close,
                     volume = EXCLUDED.volume,
-                    adjusted_close = EXCLUDED.adjusted_close
-            """, (ticker.upper(), date, open_price, high, low, close, volume, adjusted_close))
+                    change = EXCLUDED.change,
+                    change_percent = EXCLUDED.change_percent,
+                    vwap = EXCLUDED.vwap,
+                    index_name = EXCLUDED.index_name
+            """, (ticker.upper(), date, open_price, high, low, close, volume, change, change_percent, vwap, index_name))
             return cursor.rowcount > 0
     
     def get_stock_price(self, ticker: str, date: str) -> Optional[Dict[str, Any]]:
@@ -205,6 +246,78 @@ class MetricsStore:
             "change": round(change, 2),
             "pct_change": round(pct_change, 2)
         }
+    
+    # ==========================================
+    # Stock Prices (Bulk Operations)
+    # ==========================================
+    
+    def bulk_upsert_quotes(self, data_list: List[Dict[str, Any]], index_name: str) -> int:
+        """
+        Bulk upsert stock prices using psycopg2.extras.execute_values.
+        
+        Args:
+            data_list: List of dictionaries with keys matching FMP API response:
+                      symbol (will be mapped to ticker), date, open, high, low, close, volume, change, change_percent, vwap
+            index_name: Index name (e.g., 'SP500', 'NASDAQ100', 'RUSSELL2000')
+        
+        Returns:
+            Number of records inserted/updated (returns len(data_list) since execute_values doesn't report accurate rowcount)
+        """
+        if not data_list:
+            return 0
+        
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Prepare data tuples in exact column order: ticker, date, open, high, low, close, volume, change, change_percent, vwap, index_name
+            # Note: FMP API returns 'symbol', but we store it as 'ticker'
+            values = []
+            for item in data_list:
+                # Support both 'symbol' and 'ticker' keys for backward compatibility
+                ticker = item.get('ticker') or item.get('symbol', '')
+                values.append((
+                    ticker.upper(),
+                    item.get('date'),
+                    item.get('open'),
+                    item.get('high'),
+                    item.get('low'),
+                    item.get('close'),
+                    item.get('volume'),
+                    item.get('change'),
+                    item.get('change_percent'),
+                    item.get('vwap'),
+                    index_name
+                ))
+            
+            # Use execute_values for bulk insert with ON CONFLICT
+            insert_query = """
+                INSERT INTO stock_prices 
+                (ticker, date, open, high, low, close, volume, change, change_percent, vwap, index_name)
+                VALUES %s
+                ON CONFLICT (ticker, date) 
+                DO UPDATE SET
+                    open = EXCLUDED.open,
+                    high = EXCLUDED.high,
+                    low = EXCLUDED.low,
+                    close = EXCLUDED.close,
+                    volume = EXCLUDED.volume,
+                    change = EXCLUDED.change,
+                    change_percent = EXCLUDED.change_percent,
+                    vwap = EXCLUDED.vwap,
+                    index_name = EXCLUDED.index_name
+            """
+            
+            psycopg2.extras.execute_values(
+                cursor,
+                insert_query,
+                values,
+                template=None,
+                page_size=1000
+            )
+            
+            conn.commit()
+            # Note: cursor.rowcount is unreliable with execute_values, so return the actual data count
+            return len(data_list)
     
     # ==========================================
     # Financial Metrics

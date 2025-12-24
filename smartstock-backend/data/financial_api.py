@@ -39,9 +39,10 @@ class StockPrice:
     low: float
     close: float
     volume: int
-    adjusted_close: Optional[float] = None
-    change_percent: Optional[float] = None
+    change: Optional[float] = None  # Price change (absolute)
+    change_percent: Optional[float] = None  # Price change percentage
     vwap: Optional[float] = None  # Volume-weighted average price
+    # Note: adjusted_close removed - use close instead
 
 
 @dataclass
@@ -204,11 +205,17 @@ class FinancialDataFetcher:
         DataProvider.FMP: 300,  # Free tier: 300 calls/day
     }
     
-    async def _make_request(self, url: str, params: Dict[str, Any], retries: int = 3) -> Optional[Any]:
-        """Make an async GET request with 429 backoff retry logic."""
+    async def _make_request(self, url: str, params: Dict[str, Any], retries: int = 2, timeout: int = 20) -> Optional[Any]:
+        """Make an async GET request with 429 backoff retry logic and timeout protection.
+        
+        Tuned for stability under heavy load:
+        - Lower total timeout (20s) so individual calls fail fast instead of hanging.
+        - Fewer retries (2) to avoid long stalls when the provider is degraded.
+        """
+        timeout_obj = aiohttp.ClientTimeout(total=timeout, connect=10)
         for attempt in range(retries):
             try:
-                async with aiohttp.ClientSession() as session:
+                async with aiohttp.ClientSession(timeout=timeout_obj) as session:
                     async with session.get(url, params=params) as response:
                         if response.status == 200:
                             return await response.json()
@@ -220,9 +227,24 @@ class FinancialDataFetcher:
                         else:
                             print(f"[FinancialDataFetcher] API error: {response.status} for {url}")
                             return None
+            except asyncio.TimeoutError:
+                print(f"[FinancialDataFetcher] Timeout after {timeout}s for {url} (Attempt {attempt+1}/{retries})")
+                if attempt < retries - 1:
+                    await asyncio.sleep(2 * (attempt + 1))  # Exponential backoff
+                    continue
+                return None
+            except aiohttp.ClientError as e:
+                print(f"[FinancialDataFetcher] Client error for {url}: {e} (Attempt {attempt+1}/{retries})")
+                if attempt < retries - 1:
+                    await asyncio.sleep(2 * (attempt + 1))
+                    continue
+                return None
             except Exception as e:
                 print(f"[FinancialDataFetcher] Request Exception: {e}")
-                await asyncio.sleep(1)
+                if attempt < retries - 1:
+                    await asyncio.sleep(1)
+                    continue
+                return None
         return None
 
     def __init__(
@@ -345,13 +367,13 @@ class FinancialDataFetcher:
             return self._get_demo_prices(ticker, days)
     
     async def _get_fmp_prices(self, ticker: str, days: int) -> List[StockPrice]:
-        """Fetch prices from Financial Modeling Prep (stable API)."""
-        # Calculate date range
+        """Fetch prices from Financial Modeling Prep using stable API full endpoint."""
+        # Calculate date range (ensure from date is no more than 5 years ago for free tier)
         end_date = datetime.now()
-        start_date = end_date - timedelta(days=days)
+        start_date = end_date - timedelta(days=min(days, 1825))  # Max 5 years for free tier
         
-        # Use stable API endpoint
-        url = f"{self.FMP_BASE}/historical-price-eod/light"
+        # Use stable API full endpoint: /stable/historical-price-eod/full
+        url = f"{self.FMP_BASE}/historical-price-eod/full"
         params = {
             "symbol": ticker.upper(),
             "from": start_date.strftime("%Y-%m-%d"),
@@ -360,11 +382,17 @@ class FinancialDataFetcher:
         }
         
         try:
-            data = await self._make_request(url, params)
+            # Use longer timeout for large date ranges (5 years = 1825 days)
+            # 120 seconds for large requests, 20 seconds for small ones
+            timeout = 120 if days > 365 else 20
+            data = await self._make_request(url, params, timeout=timeout)
             
-            if not data or not isinstance(data, list):
-                return self._get_demo_prices(ticker, days)
+            if not data or not isinstance(data, list) or len(data) == 0:
+                error_msg = f"No price data returned for {ticker} from /stable/historical-price-eod/full"
+                print(f"[FMP] {error_msg}")
+                raise ValueError(error_msg)
             
+            # Parse full OHLC data from stable API
             prices = []
             for item in data:
                 prices.append(StockPrice(
@@ -380,8 +408,9 @@ class FinancialDataFetcher:
             return prices
             
         except Exception as e:
-            print(f"[FMP] Price fetch error: {e}")
-            return self._get_demo_prices(ticker, days)
+            error_msg = f"Failed to fetch prices for {ticker}: {str(e)}"
+            print(f"[FMP] {error_msg}")
+            raise ValueError(error_msg)
     
     def _get_demo_prices(self, ticker: str, days: int) -> List[StockPrice]:
         """Generate demo price data for testing."""
@@ -1116,6 +1145,25 @@ class FinancialDataFetcher:
             print(f"[FMP] Stock splits error for {ticker}: {e}")
             return []
     
+    async def get_sp500_tickers(self) -> List[str]:
+        """
+        Fetch the list of S&P 500 tickers from FMP.
+        """
+        if not self.fmp_key:
+            return []
+            
+        url = f"{self.FMP_V3_BASE}/sp500_constituent"
+        params = {"apikey": self.fmp_key}
+        
+        try:
+            data = await self._make_request(url, params)
+            if not data or not isinstance(data, list):
+                return []
+            return sorted([item.get("symbol", "") for item in data if item.get("symbol")])
+        except Exception as e:
+            print(f"[FMP] S&P 500 error: {e}")
+            return []
+
     async def get_nasdaq_100_tickers(self) -> List[str]:
         """
         Fetch the list of Nasdaq 100 tickers from FMP.
@@ -1123,7 +1171,7 @@ class FinancialDataFetcher:
         if not self.fmp_key:
             return []
             
-        url = f"{self.FMP_BASE}/nasdaq_constituent"
+        url = f"{self.FMP_V3_BASE}/nasdaq_constituent"
         params = {"apikey": self.fmp_key}
         
         try:
@@ -1133,6 +1181,82 @@ class FinancialDataFetcher:
             return sorted([item.get("symbol", "") for item in data if item.get("symbol")])
         except Exception as e:
             print(f"[FMP] Nasdaq 100 error: {e}")
+            return []
+
+    async def get_fmp_news(
+        self,
+        ticker: str,
+        limit: int = 50
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch company news from FMP (PREMIUM, stable API).
+        Uses fmp-articles endpoint for premium news content.
+        """
+        if not self.fmp_key:
+            return []
+        
+        # Use stable API instead of v3 (which returns 403)
+        url = f"{self.FMP_BASE}/fmp-articles"
+        params = {"page": 0, "size": limit * 3, "apikey": self.fmp_key}  # Get more to filter by ticker
+        
+        try:
+            data = await self._make_request(url, params)
+            if not data:
+                return []
+            
+            # The stable API returns a list directly, not a dict with "content"
+            articles = data if isinstance(data, list) else (data.get("content", []) if isinstance(data, dict) else [])
+            if not isinstance(articles, list):
+                return []
+            
+            ticker_upper = ticker.upper()
+            filtered = []
+            for item in articles:
+                if not isinstance(item, dict):
+                    continue
+                    
+                title = item.get("title", "") or ""
+                content = item.get("content", "") or ""
+                tickers = item.get("tickers", "")
+                
+                # Handle tickers field - can be string, list, or None
+                # Format is usually "EXCHANGE:TICKER" like "NASDAQ:AAPL" or "NYSE:MSFT"
+                tickers_str = ""
+                if isinstance(tickers, list):
+                    tickers_str = " ".join(str(t) for t in tickers).upper()
+                elif tickers:
+                    tickers_str = str(tickers).upper()
+                
+                # Check if ticker appears in tickers (with or without exchange prefix)
+                ticker_in_tickers = (
+                    ticker_upper in tickers_str or
+                    f":{ticker_upper}" in tickers_str or
+                    tickers_str.endswith(ticker_upper)
+                )
+                
+                # Filter articles that mention this ticker
+                if (ticker_upper in title.upper() or 
+                    ticker_upper in content.upper()[:1000] or  # Check first 1000 chars for performance
+                    ticker_in_tickers):
+                    # Clean HTML from content for summary
+                    import re
+                    clean_content = re.sub(r'<[^>]+>', '', content) if content else ""
+                    
+                    filtered.append({
+                        "ticker": ticker_upper,
+                        "headline": title,
+                        "summary": clean_content[:500] if clean_content else "",
+                        "source": item.get("site", "FMP"),
+                        "url": item.get("link", ""),
+                        "datetime": item.get("date", ""),
+                        "image": item.get("image", ""),
+                        "sentiment": 0
+                    })
+            
+            return filtered[:limit]
+            
+        except Exception as e:
+            print(f"[FMP] News error for {ticker}: {e}")
             return []
 
     # ==========================================
@@ -1147,11 +1271,16 @@ class FinancialDataFetcher:
     ) -> List[Dict[str, Any]]:
         """
         Fetch SEC filings (10-K, 10-Q, etc.) from FMP (PREMIUM).
+        
+        Note: Stable API doesn't have SEC filings endpoint, so we try v3 first.
+        If v3 returns 403, the caller should fallback to Edgartools.
         """
         if not self.fmp_key:
             return []
             
-        url = f"{self.FMP_BASE}/sec_filings/{ticker}"
+        # Stable API doesn't have SEC filings endpoint (returns 404)
+        # Try v3 API - if it returns 403, caller will fallback to Edgartools
+        url = f"{self.FMP_V3_BASE}/sec_filings/{ticker}"
         params = {"type": type, "limit": limit, "apikey": self.fmp_key}
         
         try:

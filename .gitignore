@@ -70,3 +70,9 @@ smartstock-backend/data/*.db
 # News archive files
 smartstock-backend/data/news_archive/
 
+# Price archive files
+smartstock-backend/data/price_archive/
+
+# Fetch logs (keep recent logs, but exclude from git)
+smartstock-backend/data/fetch_logs/
+

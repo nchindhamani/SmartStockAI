@@ -187,7 +187,12 @@ class SECApiClient:
         
         try:
             company = Company(ticker.upper())
-            filing = company.get_filings(form=form_type).latest(1)[0]
+            filings = company.get_filings(form=form_type).latest(1)
+            if not filings:
+                return None
+            
+            # latest(1) might return a Filings object or a single Filing
+            filing = filings[0] if hasattr(filings, '__getitem__') and len(filings) > 0 else filings
             
             # Get the filing document
             if hasattr(filing, 'document'):

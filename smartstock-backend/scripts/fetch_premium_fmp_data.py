@@ -215,7 +215,9 @@ async def fetch_premium_data_for_ticker(
                 low=price.low,
                 close=price.close,
                 volume=price.volume,
-                adjusted_close=price.adjusted_close
+                change=price.change_percent,
+                change_percent=price.change_percent,
+                vwap=price.vwap
             )
             if success:
                 results["esg_scores"] = True  # Reusing field for price count

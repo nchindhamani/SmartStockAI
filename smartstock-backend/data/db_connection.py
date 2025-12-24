@@ -45,13 +45,15 @@ def get_database_url() -> str:
     return database_url
 
 
-def init_connection_pool(min_conn: int = 1, max_conn: int = 10):
+def init_connection_pool(min_conn: int = 2, max_conn: int = 20):
     """
     Initialize the PostgreSQL connection pool.
     
+    Increased pool size to handle concurrent operations better.
+    
     Args:
-        min_conn: Minimum number of connections in the pool
-        max_conn: Maximum number of connections in the pool
+        min_conn: Minimum number of connections in the pool (default: 2)
+        max_conn: Maximum number of connections in the pool (default: 20)
     """
     global _connection_pool
     
@@ -64,7 +66,12 @@ def init_connection_pool(min_conn: int = 1, max_conn: int = 10):
         _connection_pool = pool.ThreadedConnectionPool(
             min_conn,
             max_conn,
-            database_url
+            database_url,
+            connect_timeout=10,  # 10 second connection timeout
+            keepalives=1,  # Enable TCP keepalives
+            keepalives_idle=30,  # Start keepalives after 30 seconds of inactivity
+            keepalives_interval=10,  # Send keepalive every 10 seconds
+            keepalives_count=3  # Close connection after 3 failed keepalives
         )
         print(f"[DB Connection] Connection pool initialized: {min_conn}-{max_conn} connections")
     except Exception as e:
@@ -80,9 +87,11 @@ def get_connection_pool() -> pool.ThreadedConnectionPool:
 
 
 @contextmanager
-def get_connection():
+def get_connection(retries: int = 3):
     """
     Context manager for getting a database connection from the pool.
+    
+    Includes automatic retry logic for connection errors and health checks.
     
     Usage:
         with get_connection() as conn:
@@ -90,23 +99,74 @@ def get_connection():
             cursor.execute("SELECT * FROM table")
             results = cursor.fetchall()
     
+    Args:
+        retries: Number of retry attempts for connection errors
+    
     Yields:
         psycopg2 connection object
     """
+    import time
     pool_instance = get_connection_pool()
     conn = None
     
+    # Retry loop to get a healthy connection
+    for attempt in range(retries):
+        try:
+            conn = pool_instance.getconn()
+            
+            # Health check: verify connection is alive
+            try:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT 1")
+                    cursor.fetchone()
+            except (psycopg2.OperationalError, psycopg2.InterfaceError):
+                # Connection is dead, close it and try again
+                try:
+                    pool_instance.putconn(conn, close=True)
+                except:
+                    pass
+                conn = None
+                if attempt < retries - 1:
+                    time.sleep(0.5 * (attempt + 1))  # Exponential backoff
+                    continue
+                raise psycopg2.OperationalError("Failed to get healthy connection after retries")
+            
+            # Connection is healthy, break out of retry loop
+            break
+            
+        except (psycopg2.OperationalError, psycopg2.InterfaceError, psycopg2.pool.PoolError) as e:
+            if conn:
+                try:
+                    pool_instance.putconn(conn, close=True)
+                except:
+                    pass
+                conn = None
+            
+            if attempt < retries - 1:
+                time.sleep(0.5 * (attempt + 1))  # Exponential backoff
+                continue
+            raise e
+    
+    # Now use the healthy connection
     try:
-        conn = pool_instance.getconn()
         yield conn
         conn.commit()
     except Exception as e:
         if conn:
-            conn.rollback()
+            try:
+                conn.rollback()
+            except:
+                pass
         raise e
     finally:
         if conn:
-            pool_instance.putconn(conn)
+            try:
+                pool_instance.putconn(conn)
+            except:
+                try:
+                    conn.close()
+                except:
+                    pass
 
 
 def close_connection_pool():
