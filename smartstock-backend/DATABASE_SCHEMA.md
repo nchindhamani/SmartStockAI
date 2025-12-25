@@ -6,7 +6,7 @@ This document describes all PostgreSQL tables used in the SmartStock AI backend 
 
 The SmartStock AI system uses **PostgreSQL** as the primary database for structured financial data. Unstructured data (SEC filings, news articles, earnings transcripts) is stored in **ChromaDB** (vector store) for semantic search.
 
-**Total Tables: 18**
+**Total Tables: 19**
 
 ---
 
@@ -47,8 +47,9 @@ The SmartStock AI system uses **PostgreSQL** as the primary database for structu
 ### 9. News & Content (1 table)
 - `news_articles` - News articles with 30-day retention policy
 
-### 10. System & Logging (1 table)
+### 10. System & Logging (2 tables)
 - `fetch_logs` - Logging for data ingestion operations
+- `sync_logs` - Logging for daily sync pipeline tasks
 
 ---
 
@@ -66,11 +67,18 @@ The SmartStock AI system uses **PostgreSQL** as the primary database for structu
 - `low` (DOUBLE PRECISION) - Lowest price of the day
 - `close` (DOUBLE PRECISION) - Closing price
 - `volume` (BIGINT) - Trading volume
-- `adjusted_close` (DOUBLE PRECISION) - Adjusted closing price (for splits/dividends)
+- `change` (DOUBLE PRECISION) - Price change from previous close
+- `change_percent` (DOUBLE PRECISION) - Price change percentage
+- `vwap` (DOUBLE PRECISION) - Volume-weighted average price
+- `index_name` (VARCHAR(100)) - Index name (e.g., 'SP500', 'NASDAQ100', 'RUSSELL2000')
+- `created_at` (TIMESTAMP) - Record creation timestamp
 
 **Unique Constraint:** `(ticker, date)` - One record per ticker per day
 
-**Indexes:** `(ticker, date)` for fast lookups
+**Indexes:**
+- `idx_stock_prices_ticker_date` on `(ticker, date)` - For fast lookups
+- `idx_stock_prices_index_name` on `index_name` - For filtering by index
+- `idx_stock_prices_date` on `date` - For date range queries
 
 **Source:** FMP API (`/stable/historical-price-eod/full`)
 
@@ -352,16 +360,25 @@ The SmartStock AI system uses **PostgreSQL** as the primary database for structu
 
 ### 15. `dcf_valuations`
 
-**Purpose:** Discounted Cash Flow (DCF) valuations.
+**Purpose:** Discounted Cash Flow (DCF) valuations (latest only - one record per ticker).
 
 **Key Fields:**
-- `ticker` (VARCHAR(10)) - Stock ticker
+- `ticker` (VARCHAR(10)) - Stock ticker (UNIQUE)
 - `date` (DATE) - Valuation date
-- `dcf_value` (DOUBLE PRECISION) - DCF calculated value
-- `stock_price` (DOUBLE PRECISION) - Current stock price
-- `upside_percent` (DOUBLE PRECISION) - Upside/downside percentage
+- `dcf_value` (DOUBLE PRECISION) - DCF calculated intrinsic value
+- `stock_price` (DOUBLE PRECISION) - Current stock price at valuation date
+- `upside_percent` (DOUBLE PRECISION) - Upside/downside percentage: `((dcf_value / stock_price) - 1) * 100`
+- `source` (VARCHAR(50)) - Data source (default: 'FMP')
+- `created_at` (TIMESTAMP) - Record creation timestamp
+- `updated_at` (TIMESTAMP) - Last update timestamp
 
-**Unique Constraint:** `(ticker, date)`
+**Unique Constraint:** `(ticker)` - Only one record per ticker (latest valuation)
+
+**Design Philosophy:**
+- Stores only the **most recent** DCF valuation per ticker
+- Historical DCF tracking is not maintained (keeps database lean)
+- Price trends are analyzed using the `stock_prices` table instead
+- Each new DCF fetch updates the existing record via `ON CONFLICT (ticker) DO UPDATE`
 
 **Source:** FMP API (`/stable/discounted-cash-flow`)
 
@@ -439,6 +456,44 @@ The SmartStock AI system uses **PostgreSQL** as the primary database for structu
 - `(created_at)` - For time-based queries
 
 **Source:** Internal logging system
+
+---
+
+### 19. `sync_logs`
+
+**Purpose:** Logging for daily sync pipeline tasks (automated data ingestion).
+
+**Key Fields:**
+- `id` (SERIAL) - Primary key
+- `task_name` (VARCHAR(100)) - Task name (e.g., 'fetch_russell_tickers', 'ingest_market_data', 'ingest_all_dcf')
+- `status` (VARCHAR(20)) - Status ('success', 'failed', 'running')
+- `rows_updated` (INTEGER) - Number of rows updated/inserted
+- `error_message` (TEXT) - Error message if failed
+- `started_at` (TIMESTAMP) - Task start timestamp
+- `completed_at` (TIMESTAMP) - Task completion timestamp
+- `duration_seconds` (DOUBLE PRECISION) - Task duration in seconds
+- `metadata` (JSONB) - Additional metadata (task-specific information)
+
+**Indexes:**
+- `idx_sync_logs_task_name` on `task_name` - For filtering by task
+- `idx_sync_logs_completed_at` on `completed_at DESC` - For recent sync queries
+
+**Source:** `data/sync_logger.py` - Daily sync automation system
+
+**Usage:**
+```sql
+-- Get latest sync status for each task
+SELECT DISTINCT ON (task_name)
+    task_name, status, rows_updated, error_message, completed_at
+FROM sync_logs
+ORDER BY task_name, completed_at DESC;
+
+-- Check if last sync was successful
+SELECT task_name, status, completed_at
+FROM sync_logs
+WHERE completed_at > NOW() - INTERVAL '24 hours'
+ORDER BY completed_at DESC;
+```
 
 ---
 

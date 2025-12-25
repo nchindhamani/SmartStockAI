@@ -85,8 +85,8 @@
 
 **Before**:
 ```sql
-SELECT symbol, date, open, high, low, close, volume, adjusted_close
-FROM market_quotes
+SELECT ticker, date, open, high, low, close, volume, change, change_percent, vwap, index_name
+FROM stock_prices
 WHERE symbol = 'AAPL'
 ```
 

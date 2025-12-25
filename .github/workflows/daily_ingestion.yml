@@ -1,0 +1,67 @@
+name: Daily Data Ingestion
+
+on:
+  schedule:
+    # Run every day at 05:00 UTC (12:00 AM EST / 1:00 AM EDT)
+    - cron: '0 5 * * *'
+  workflow_dispatch:  # Allow manual triggering
+
+jobs:
+  daily-sync:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+      
+      - name: Install dependencies
+        working-directory: smartstock-backend
+        run: |
+          uv sync
+      
+      - name: Run daily sync
+        working-directory: smartstock-backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_PUBLIC_URL: ${{ secrets.DATABASE_PUBLIC_URL }}
+          FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+        run: |
+          uv run python scripts/daily_sync.py
+      
+      - name: Check sync status
+        working-directory: smartstock-backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_PUBLIC_URL: ${{ secrets.DATABASE_PUBLIC_URL }}
+        run: |
+          uv run python -c "
+          from data.sync_logger import get_sync_logger
+          logger = get_sync_logger()
+          status = logger.get_all_recent_syncs(limit=3)
+          print('Recent sync status:')
+          for s in status:
+              print(f\"  {s['task_name']}: {s['status']} ({s.get('rows_updated', 0)} rows)\")
+          "
+      
+      - name: Upload logs (if failed)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ingestion-logs
+          path: |
+            smartstock-backend/data/logs/*.log
+          retention-days: 7
+

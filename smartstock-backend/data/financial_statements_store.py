@@ -196,7 +196,7 @@ class FinancialStatementsStore:
                 )
             """)
             
-            # DCF valuations table
+            # DCF valuations table (latest only - one record per ticker)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS dcf_valuations (
                     id SERIAL PRIMARY KEY,
@@ -207,8 +207,41 @@ class FinancialStatementsStore:
                     upside_percent DOUBLE PRECISION,
                     source VARCHAR(50) DEFAULT 'FMP',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(ticker, date)
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
+            """)
+            
+            # Add unique constraint on ticker (if table already exists, this will be handled by cleanup script)
+            cursor.execute("""
+                DO $$ 
+                BEGIN
+                    -- Drop old (ticker, date) constraint if it exists
+                    IF EXISTS (
+                        SELECT 1 FROM pg_constraint 
+                        WHERE conname = 'dcf_valuations_ticker_date_key'
+                    ) THEN
+                        ALTER TABLE dcf_valuations 
+                        DROP CONSTRAINT dcf_valuations_ticker_date_key;
+                    END IF;
+                    
+                    -- Add new ticker-only unique constraint if it doesn't exist
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_constraint 
+                        WHERE conname = 'dcf_valuations_ticker_key'
+                    ) THEN
+                        ALTER TABLE dcf_valuations 
+                        ADD CONSTRAINT dcf_valuations_ticker_key UNIQUE (ticker);
+                    END IF;
+                    
+                    -- Add updated_at column if it doesn't exist
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns 
+                        WHERE table_name = 'dcf_valuations' AND column_name = 'updated_at'
+                    ) THEN
+                        ALTER TABLE dcf_valuations 
+                        ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+                    END IF;
+                END $$;
             """)
             
             # Analyst estimates table
@@ -599,18 +632,26 @@ class FinancialStatementsStore:
     # ==========================================
     
     def add_dcf_valuation(self, data: Dict[str, Any]) -> bool:
-        """Add or update DCF valuation."""
+        """
+        Add or update DCF valuation (latest only - one record per ticker).
+        
+        Uses ON CONFLICT (ticker) to ensure only the most recent DCF is stored.
+        Historical DCF tracking is not needed - we use stock_prices for price trends.
+        """
         with get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO dcf_valuations
-                (ticker, date, dcf_value, stock_price, upside_percent, source)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                ON CONFLICT (ticker, date)
+                (ticker, date, dcf_value, stock_price, upside_percent, source, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (ticker)
                 DO UPDATE SET
+                    date = EXCLUDED.date,
                     dcf_value = EXCLUDED.dcf_value,
                     stock_price = EXCLUDED.stock_price,
-                    upside_percent = EXCLUDED.upside_percent
+                    upside_percent = EXCLUDED.upside_percent,
+                    source = EXCLUDED.source,
+                    updated_at = CURRENT_TIMESTAMP
             """, (
                 data.get("ticker", "").upper(),
                 data.get("date") or datetime.now().date(),
@@ -724,14 +765,18 @@ class FinancialStatementsStore:
     # ==========================================
     
     def get_latest_dcf(self, ticker: str) -> Optional[Dict[str, Any]]:
-        """Get the latest DCF valuation for a ticker."""
+        """
+        Get the latest DCF valuation for a ticker.
+        
+        Optimized: Since we only store one record per ticker (latest only),
+        this is a simple lookup without ordering.
+        """
         with get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT dcf_value, stock_price, upside_percent, date 
                 FROM dcf_valuations 
-                WHERE ticker = %s 
-                ORDER BY date DESC LIMIT 1
+                WHERE ticker = %s
             """, (ticker.upper(),))
             row = cursor.fetchone()
             if row:

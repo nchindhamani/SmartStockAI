@@ -39,7 +39,7 @@ python scripts/check_stock_data.py AAPL MSFT GOOGL
 ### 1. Get Nasdaq 100 OHLC Data (Ordered by Ticker, then Date Descending)
 
 ```sql
-SELECT ticker, date, open, high, low, close, volume, adjusted_close
+SELECT ticker, date, open, high, low, close, volume, change, change_percent, vwap, index_name
 FROM stock_prices
 WHERE ticker IN (
     'AAPL', 'MSFT', 'AMZN', 'NVDA', 'META', 'GOOGL', 'GOOG', 'TSLA', 'AVGO', 'COST',
@@ -59,7 +59,7 @@ ORDER BY ticker ASC, date DESC;
 ### 2. Get S&P 500 OHLC Data (Ordered by Ticker, then Date Descending)
 
 ```sql
-SELECT sp.ticker, sp.date, sp.open, sp.high, sp.low, sp.close, sp.volume, sp.adjusted_close
+SELECT sp.ticker, sp.date, sp.open, sp.high, sp.low, sp.close, sp.volume, sp.change, sp.change_percent, sp.vwap, sp.index_name
 FROM stock_prices sp
 INNER JOIN company_profiles cp ON sp.ticker = cp.ticker
 WHERE sp.close > 0
@@ -70,7 +70,7 @@ ORDER BY sp.ticker ASC, sp.date DESC;
 
 ```sql
 \copy (
-    SELECT ticker, date, open, high, low, close, volume, adjusted_close
+    SELECT ticker, date, open, high, low, close, volume, change, change_percent, vwap, index_name
     FROM stock_prices
     WHERE ticker IN ('AAPL', 'MSFT', 'GOOGL')
     AND close > 0

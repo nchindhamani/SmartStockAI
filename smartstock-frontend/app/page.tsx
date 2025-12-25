@@ -3,7 +3,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Message, AgentResponse } from '@/types';
 import RichAgentResponse from '@/components/RichAgentResponse';
-import { Sparkles, TrendingUp, BarChart3, Zap, FileText, Settings } from 'lucide-react';
+import { Sparkles, TrendingUp, BarChart3, Zap, FileText, Settings, Copy, Check } from 'lucide-react';
 
 // Suggested prompts for the home screen
 const SUGGESTED_PROMPTS = [
@@ -105,6 +105,19 @@ export default function SmartStockAI() {
     setMessages([]);
     setError(null);
     inputRef.current?.focus();
+  };
+
+  // Copy to clipboard functionality
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  
+  const copyToClipboard = async (text: string, messageId: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedId(messageId);
+      setTimeout(() => setCopiedId(null), 2000); // Reset after 2 seconds
+    } catch (err) {
+      console.error('Failed to copy text:', err);
+    }
   };
 
   // Determine layout state
@@ -305,17 +318,48 @@ export default function SmartStockAI() {
             >
               {message.role === 'user' ? (
                 // User Bubble
-                <div className="max-w-[85%] md:max-w-[70%]">
+                <div className="max-w-[85%] md:max-w-[70%] group relative">
                   <div className="bg-primary-600 text-white px-6 py-4 rounded-2xl rounded-br-md 
-                                shadow-medium">
-                    <p className="text-base leading-relaxed">{message.content}</p>
+                                shadow-medium relative">
+                    <p className="text-base leading-relaxed pr-8">{message.content}</p>
+                    <button
+                      onClick={() => copyToClipboard(message.content, message.id)}
+                      className="absolute top-3 right-3 p-1.5 rounded-lg bg-white/10 hover:bg-white/20 
+                               transition-all duration-200 opacity-0 group-hover:opacity-100
+                               active:scale-95"
+                      title="Copy message"
+                    >
+                      {copiedId === message.id ? (
+                        <Check className="w-4 h-4 text-white" />
+                      ) : (
+                        <Copy className="w-4 h-4 text-white" />
+                      )}
+                    </button>
                   </div>
                 </div>
               ) : (
                 // Assistant Bubble with Rich Response
-                <div className="max-w-[95%] md:max-w-[85%] w-full">
+                <div className="max-w-[95%] md:max-w-[85%] w-full group relative">
                   <div className="bg-white border border-neutral-200 rounded-2xl shadow-soft 
-                                overflow-hidden">
+                                overflow-hidden relative">
+                    <button
+                      onClick={() => {
+                        const textToCopy = message.agentResponse 
+                          ? message.agentResponse.synthesis 
+                          : message.content;
+                        copyToClipboard(textToCopy, message.id);
+                      }}
+                      className="absolute top-4 right-4 p-2 rounded-lg bg-neutral-100 hover:bg-neutral-200 
+                               transition-all duration-200 opacity-0 group-hover:opacity-100 z-10
+                               active:scale-95 border border-neutral-200"
+                      title="Copy message"
+                    >
+                      {copiedId === message.id ? (
+                        <Check className="w-4 h-4 text-primary-600" />
+                      ) : (
+                        <Copy className="w-4 h-4 text-neutral-600" />
+                      )}
+                    </button>
                     <div className="px-6 py-5">
                       {message.agentResponse ? (
                         <RichAgentResponse response={message.agentResponse} />

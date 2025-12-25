@@ -4,15 +4,17 @@
 
 This system implements a resilient ingestion pipeline for OHLC market data from FMP's `/historical-price-eod/full` endpoint with comprehensive error handling.
 
+**Note:** This system was originally designed for a `market_quotes` table, but has been migrated to use the `stock_prices` table. The table name and column names have been updated accordingly.
+
 ## Part 1: Database Setup
 
-### Table: `market_quotes`
+### Table: `stock_prices`
 
 **Schema (matches FMP API response order exactly):**
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `symbol` | VARCHAR(10) | Stock ticker symbol |
+| `ticker` | VARCHAR(10) | Stock ticker symbol (was `symbol`) |
 | `date` | DATE | Trading date |
 | `open` | DECIMAL(12,4) | Opening price |
 | `high` | DECIMAL(12,4) | Highest price |
@@ -26,10 +28,11 @@ This system implements a resilient ingestion pipeline for OHLC market data from 
 | `created_at` | TIMESTAMP | Record creation timestamp (default: CURRENT_TIMESTAMP) |
 
 **Constraints:**
-- **Composite Primary Key:** `(symbol, date)` - Ensures one record per symbol per day
+- **Composite Primary Key:** `(ticker, date)` - Ensures one record per ticker per day
 - **Indexes:**
-  - `idx_market_quotes_index_name` on `index_name` - For filtering by index
-  - `idx_market_quotes_date` on `date` - For date range queries
+  - `idx_stock_prices_ticker_date` on `(ticker, date)` - For fast lookups
+  - `idx_stock_prices_index_name` on `index_name` - For filtering by index
+  - `idx_stock_prices_date` on `date` - For date range queries
 
 **Location:** Created automatically in `MetricsStore._init_tables()`
 
@@ -47,7 +50,7 @@ This system implements a resilient ingestion pipeline for OHLC market data from 
 
 **Features:**
 - Uses `execute_values` for high-performance bulk operations
-- `ON CONFLICT (symbol, date) DO UPDATE` for safe re-ingestion
+- `ON CONFLICT (ticker, date) DO UPDATE` for safe re-ingestion
 - Updates all fields on conflict (no duplicates)
 - Page size: 1000 records per batch
 
@@ -58,7 +61,7 @@ from data.metrics_store import get_metrics_store
 store = get_metrics_store()
 data = [
     {
-        'symbol': 'AAPL',
+        'ticker': 'AAPL',  # Note: 'ticker' (not 'symbol')
         'date': '2025-12-23',
         'open': 150.25,
         'high': 152.30,
@@ -284,7 +287,7 @@ python scripts/ingest_market_quotes.py AAPL TEST
 ### Verify Data
 
 ```sql
-SELECT * FROM market_quotes WHERE symbol = 'AAPL' ORDER BY date DESC LIMIT 10;
+SELECT * FROM stock_prices WHERE ticker = 'AAPL' ORDER BY date DESC LIMIT 10;
 ```
 
 ### Check Failed Logs
@@ -297,7 +300,7 @@ cat data/logs/failed_ingestion.log | jq .
 
 ## Notes
 
-1. **Deduplication:** The composite primary key `(symbol, date)` ensures no duplicates. Re-running the script will update existing records.
+1. **Deduplication:** The composite primary key `(ticker, date)` ensures no duplicates. Re-running the script will update existing records.
 
 2. **Rate Limiting:** The 10-second wait for 429 errors is designed to clear FMP's 1-minute rate limit window.
 

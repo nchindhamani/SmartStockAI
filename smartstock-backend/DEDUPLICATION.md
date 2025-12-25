@@ -19,8 +19,8 @@ The system uses **PostgreSQL's `ON CONFLICT` clauses** to ensure that re-running
 
 **Example**:
 ```sql
-INSERT INTO stock_prices (ticker, date, open, high, low, close, volume, adjusted_close)
-VALUES ('AAPL', '2024-01-15', 175.0, 180.0, 174.0, 179.0, 50000000, 179.0)
+INSERT INTO stock_prices (ticker, date, open, high, low, close, volume, change, change_percent, vwap, index_name)
+VALUES ('AAPL', '2024-01-15', 175.0, 180.0, 174.0, 179.0, 50000000, 1.0, 0.56, 177.5, 'SP500')
 ON CONFLICT (ticker, date) 
 DO UPDATE SET
     open = EXCLUDED.open,
@@ -28,7 +28,10 @@ DO UPDATE SET
     low = EXCLUDED.low,
     close = EXCLUDED.close,
     volume = EXCLUDED.volume,
-    adjusted_close = EXCLUDED.adjusted_close
+    change = EXCLUDED.change,
+    change_percent = EXCLUDED.change_percent,
+    vwap = EXCLUDED.vwap,
+    index_name = EXCLUDED.index_name
 ```
 
 ### 2. Financial Metrics (`financial_metrics` table)
