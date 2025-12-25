@@ -33,6 +33,7 @@ dependencies = [
     "langchain-google-genai>=4.0.0",
     "finnhub-python>=2.4.26",
     "edgartools>=5.0.2",
+    "psycopg2-binary>=2.9.9",
 ]
 
 [project.optional-dependencies]
