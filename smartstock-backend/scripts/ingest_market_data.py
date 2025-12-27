@@ -14,8 +14,8 @@ This reduces execution time from ~13.5 minutes to ~1-2 minutes on most days.
 import sys
 import asyncio
 from pathlib import Path
-from datetime import datetime, timedelta
-from typing import List, Dict, Any
+from datetime import datetime, timedelta, date
+from typing import List, Dict, Any, Set
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -78,8 +78,89 @@ def get_tickers_missing_recent_data(days_back: int = 2) -> List[str]:
         return [row[0] for row in cursor.fetchall()]
 
 
+def get_us_market_holidays(year: int) -> Set[date]:
+    """
+    Get US stock market holidays for a given year.
+    
+    Returns set of dates when US markets (NYSE/NASDAQ) are closed.
+    """
+    holidays = set()
+    
+    # Fixed holidays
+    holidays.add(date(year, 1, 1))   # New Year's Day
+    
+    # MLK Day (3rd Monday in January)
+    mlk_day = date(year, 1, 1)
+    while mlk_day.weekday() != 0:  # Monday
+        mlk_day += timedelta(days=1)
+    mlk_day += timedelta(days=14)  # 3rd Monday
+    holidays.add(mlk_day)
+    
+    # Presidents' Day (3rd Monday in February)
+    pres_day = date(year, 2, 1)
+    while pres_day.weekday() != 0:  # Monday
+        pres_day += timedelta(days=1)
+    pres_day += timedelta(days=14)  # 3rd Monday
+    holidays.add(pres_day)
+    
+    # Good Friday (Friday before Easter - approximate)
+    # Easter calculation: first Sunday after first full moon after spring equinox
+    # Simplified: Good Friday is typically in March or April
+    # For 2025: April 18
+    if year == 2025:
+        holidays.add(date(2025, 4, 18))
+    elif year == 2026:
+        holidays.add(date(2026, 4, 3))
+    elif year == 2027:
+        holidays.add(date(2027, 3, 26))
+    else:
+        # Fallback: approximate as last Friday in March or first Friday in April
+        # This is a simplification - for production, use a proper Easter calculator
+        pass
+    
+    # Memorial Day (last Monday in May)
+    mem_day = date(year, 5, 31)
+    while mem_day.weekday() != 0:  # Monday
+        mem_day -= timedelta(days=1)
+    holidays.add(mem_day)
+    
+    # Juneteenth (June 19)
+    holidays.add(date(year, 6, 19))
+    
+    # Independence Day (July 4, or July 3 if July 4 is Sunday)
+    july_4 = date(year, 7, 4)
+    if july_4.weekday() == 6:  # Sunday
+        holidays.add(date(year, 7, 3))  # Observed on Friday
+    else:
+        holidays.add(july_4)
+    
+    # Labor Day (1st Monday in September)
+    labor_day = date(year, 9, 1)
+    while labor_day.weekday() != 0:  # Monday
+        labor_day += timedelta(days=1)
+    holidays.add(labor_day)
+    
+    # Thanksgiving (4th Thursday in November)
+    thanksgiving = date(year, 11, 1)
+    while thanksgiving.weekday() != 3:  # Thursday
+        thanksgiving += timedelta(days=1)
+    thanksgiving += timedelta(days=21)  # 4th Thursday
+    holidays.add(thanksgiving)
+    
+    # Christmas (December 25, or December 24 if Dec 25 is Saturday, or Dec 26 if Dec 25 is Sunday)
+    christmas = date(year, 12, 25)
+    if christmas.weekday() == 5:  # Saturday
+        holidays.add(date(year, 12, 24))  # Observed on Friday
+    elif christmas.weekday() == 6:  # Sunday
+        holidays.add(date(year, 12, 26))  # Observed on Monday
+    else:
+        holidays.add(christmas)
+    
+    return holidays
+
+
 def get_missing_dates_for_ticker(ticker: str, start_date: datetime.date, end_date: datetime.date) -> List[datetime.date]:
-    """Get list of missing dates for a ticker within the date range."""
+    """Get list of missing dates for a ticker within the date range, excluding weekends and market holidays."""
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -91,14 +172,22 @@ def get_missing_dates_for_ticker(ticker: str, start_date: datetime.date, end_dat
         """, (ticker, start_date, end_date))
         existing_dates = {row[0] for row in cursor.fetchall()}
     
+    # Get market holidays for the year range
+    years = {start_date.year, end_date.year}
+    market_holidays = set()
+    for year in years:
+        market_holidays.update(get_us_market_holidays(year))
+    
     # Generate all dates in range and find missing ones
     all_dates = []
     current = start_date
     while current <= end_date:
         # Skip weekends (Saturday=5, Sunday=6)
         if current.weekday() < 5:  # Monday=0 to Friday=4
-            if current not in existing_dates:
-                all_dates.append(current)
+            # Skip market holidays
+            if current not in market_holidays:
+                if current not in existing_dates:
+                    all_dates.append(current)
         current += timedelta(days=1)
     
     return all_dates
