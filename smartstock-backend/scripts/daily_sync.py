@@ -287,9 +287,17 @@ def main():
         if status == "success":
             rows = result.get("rows_updated") or result.get("total_records") or result.get("ticker_count") or 0
             print(f"✅ {task_name}: {rows} records/tickers")
-        else:
+        elif status == "failed":
             error = result.get("error", "Unknown error")
             print(f"❌ {task_name}: {error}")
+        else:
+            # Check if it actually succeeded based on results
+            if result.get("successful", 0) > 0 or result.get("total_records", 0) > 0:
+                rows = result.get("total_records") or result.get("successful") or result.get("ticker_count") or 0
+                print(f"✅ {task_name}: {rows} records/tickers (completed but status not set)")
+            else:
+                error = result.get("error", "Unknown error")
+                print(f"❌ {task_name}: {error}")
     
     print()
     print("Check sync_logs table for detailed status:")
