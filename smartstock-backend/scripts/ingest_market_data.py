@@ -325,11 +325,11 @@ async def ingest_market_data(days: int = 5) -> Dict[str, Any]:
     print()
     
     return {
-        "total_tickers": len(all_tickers),
+        "total_tickers": len(ticker_tasks),
         "successful": successful,
         "failed": failed,
         "total_records": total_records,
-        "date_range": f"{start_date_str} to {end_date_str}"
+        "date_range": f"{start_date} to {end_date}"
     }
 
 

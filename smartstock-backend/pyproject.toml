@@ -69,7 +69,9 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 
 [tool.uv]
-dev-dependencies = [
+# Note: dev-dependencies is deprecated, using dependency-groups instead
+[project.optional-dependencies]
+dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
     "httpx>=0.25.0",

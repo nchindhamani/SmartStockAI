@@ -25,7 +25,7 @@ from data.sync_logger import get_sync_logger
 load_dotenv()
 
 # Configuration
-SEMAPHORE_LIMIT = 10  # Lower concurrency for DCF (API may be slower)
+SEMAPHORE_LIMIT = 5  # Lower concurrency for DCF to avoid rate limits (429 errors)
 REQUEST_TIMEOUT = 30
 
 
