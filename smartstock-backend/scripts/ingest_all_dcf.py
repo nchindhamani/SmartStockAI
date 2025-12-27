@@ -12,7 +12,7 @@ import sys
 import asyncio
 from pathlib import Path
 from typing import List, Dict, Any
-from datetime import datetime
+from datetime import datetime, timedelta
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -25,7 +25,7 @@ from data.sync_logger import get_sync_logger
 load_dotenv()
 
 # Configuration
-SEMAPHORE_LIMIT = 5  # Lower concurrency for DCF to avoid rate limits (429 errors)
+SEMAPHORE_LIMIT = 10  # Increased concurrency with batch processing to balance speed and rate limits
 REQUEST_TIMEOUT = 30
 
 
@@ -72,17 +72,29 @@ async def ingest_all_dcf() -> Dict[str, Any]:
     print("=" * 80)
     print()
     
-    # Get all unique tickers from stock_prices
+    # Get tickers that need DCF updates (missing DCF or stale >7 days)
     with get_connection() as conn:
         cursor = conn.cursor()
+        cutoff_date = datetime.now().date() - timedelta(days=7)
+        
         cursor.execute("""
-            SELECT DISTINCT ticker 
-            FROM stock_prices 
-            ORDER BY ticker
-        """)
+            SELECT DISTINCT sp.ticker 
+            FROM stock_prices sp
+            LEFT JOIN dcf_valuations dcf ON sp.ticker = dcf.ticker
+            WHERE dcf.ticker IS NULL 
+               OR dcf.updated_at < %s
+            ORDER BY sp.ticker
+        """, (cutoff_date,))
         all_tickers = [row[0] for row in cursor.fetchall()]
+        
+        # Get total count for reporting
+        cursor.execute("SELECT COUNT(DISTINCT ticker) FROM stock_prices")
+        total_tickers = cursor.fetchone()[0]
     
-    print(f"Found {len(all_tickers)} unique tickers")
+    print(f"Found {total_tickers} total tickers")
+    print(f"Tickers needing DCF update: {len(all_tickers)}")
+    if len(all_tickers) < total_tickers:
+        print(f"⏩ Skipping {total_tickers - len(all_tickers)} tickers with recent DCF data")
     print(f"Concurrency: {SEMAPHORE_LIMIT}")
     print(f"Timeout: {REQUEST_TIMEOUT}s per ticker")
     print()
@@ -92,10 +104,10 @@ async def ingest_all_dcf() -> Dict[str, Any]:
     statements_store = get_financial_statements_store()
     semaphore = asyncio.Semaphore(SEMAPHORE_LIMIT)
     
-    # Fetch DCF for all tickers with rate limit protection
-    # Process in smaller batches with delays to avoid overwhelming the API
+    # Fetch DCF for all tickers with optimized concurrency
+    # Process in larger batches with minimal delays for better throughput
     start_time = datetime.now()
-    batch_size = SEMAPHORE_LIMIT * 2  # Process 10 tickers at a time (5 concurrent × 2)
+    batch_size = SEMAPHORE_LIMIT * 3  # Process 30 tickers at a time (10 concurrent × 3)
     results = []
     
     for i in range(0, len(all_tickers), batch_size):
@@ -108,11 +120,11 @@ async def ingest_all_dcf() -> Dict[str, Any]:
         batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
         results.extend(batch_results)
         
-        # Add small delay between batches to avoid rate limits
-        if i + batch_size < len(all_tickers):
-            await asyncio.sleep(1)  # 1 second delay between batches
+        # Minimal delay only every 5 batches to avoid rate limits (reduced from 1s per batch)
+        if (i // batch_size) % 5 == 0 and i + batch_size < len(all_tickers):
+            await asyncio.sleep(0.5)  # 0.5 second delay every 5 batches
         
-        if (i + batch_size) % 100 == 0:
+        if (i + batch_size) % 200 == 0 or i + batch_size >= len(all_tickers):
             print(f"Processed {min(i + batch_size, len(all_tickers))}/{len(all_tickers)} tickers...")
     
     # Process results
