@@ -2,9 +2,11 @@
 # Sync Logging System for Daily Ingestion Pipeline
 # Tracks task execution status, errors, and completion times
 
+import json
 from typing import Optional, Dict, Any
 from datetime import datetime
 from data.db_connection import get_connection
+import psycopg2.extras
 
 
 class SyncLogger:
@@ -66,11 +68,14 @@ class SyncLogger:
         """
         with get_connection() as conn:
             cursor = conn.cursor()
+            # Convert metadata dict to JSON string for JSONB column
+            metadata_json = json.dumps(metadata) if metadata else None
+            
             cursor.execute("""
                 INSERT INTO sync_logs (task_name, status, metadata, started_at)
-                VALUES (%s, 'running', %s, CURRENT_TIMESTAMP)
+                VALUES (%s, 'running', %s::jsonb, CURRENT_TIMESTAMP)
                 RETURNING id
-            """, (task_name, metadata))
+            """, (task_name, metadata_json))
             log_id = cursor.fetchone()[0]
             conn.commit()
             return log_id
@@ -103,6 +108,9 @@ class SyncLogger:
             start_time = cursor.fetchone()[0]
             duration = (datetime.now() - start_time).total_seconds()
             
+            # Convert metadata dict to JSON string for JSONB column
+            metadata_json = json.dumps(metadata) if metadata else None
+            
             cursor.execute("""
                 UPDATE sync_logs
                 SET status = %s,
@@ -112,7 +120,7 @@ class SyncLogger:
                     duration_seconds = %s,
                     metadata = COALESCE(metadata, '{}'::jsonb) || COALESCE(%s::jsonb, '{}'::jsonb)
                 WHERE id = %s
-            """, (status, rows_updated, error_message, duration, metadata, log_id))
+            """, (status, rows_updated, error_message, duration, metadata_json, log_id))
             conn.commit()
     
     def get_latest_sync_status(self, task_name: Optional[str] = None) -> Optional[Dict[str, Any]]:

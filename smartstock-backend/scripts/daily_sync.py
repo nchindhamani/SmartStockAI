@@ -174,7 +174,7 @@ async def ingest_market_data_task() -> Dict[str, Any]:
         }
 
 
-def ingest_all_dcf_task() -> Dict[str, Any]:
+async def ingest_all_dcf_task() -> Dict[str, Any]:
     """
     Task 3: Ingest DCF valuations for all stocks.
     
@@ -190,7 +190,7 @@ def ingest_all_dcf_task() -> Dict[str, Any]:
         print("=" * 80)
         print()
         
-        result = ingest_all_dcf()
+        result = await ingest_all_dcf()
         
         if result.get("error"):
             # Fatal error
