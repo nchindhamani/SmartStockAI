@@ -200,6 +200,7 @@ async def ingest_all_dcf_task() -> Dict[str, Any]:
                 rows_updated=0,
                 error_message=result.get("error")
             )
+            result["status"] = "failed"
             return result
         
         # Success - count successful updates
@@ -216,7 +217,7 @@ async def ingest_all_dcf_task() -> Dict[str, Any]:
                 "duration_seconds": result.get("duration_seconds", 0)
             }
         )
-        
+        result["status"] = "success"
         return result
         
     except Exception as e:
