@@ -141,10 +141,11 @@ async def ingest_market_data_task() -> Dict[str, Any]:
             return result
         
         # Success
+        total_records = result.get("total_records", 0)
         sync_logger.log_task_completion(
             log_id,
             status="success",
-            rows_updated=result.get("total_records", 0),
+            rows_updated=total_records,
             metadata={
                 "total_tickers": result.get("total_tickers", 0),
                 "successful": result.get("successful", 0),
@@ -152,7 +153,7 @@ async def ingest_market_data_task() -> Dict[str, Any]:
                 "date_range": result.get("date_range", "")
             }
         )
-        
+        result["status"] = "success"
         return result
         
     except Exception as e:
