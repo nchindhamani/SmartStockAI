@@ -92,14 +92,28 @@ async def ingest_all_dcf() -> Dict[str, Any]:
     statements_store = get_financial_statements_store()
     semaphore = asyncio.Semaphore(SEMAPHORE_LIMIT)
     
-    # Fetch DCF for all tickers
+    # Fetch DCF for all tickers with rate limit protection
+    # Process in smaller batches with delays to avoid overwhelming the API
     start_time = datetime.now()
-    tasks = [
-        fetch_dcf_for_ticker(ticker, fetcher, statements_store, semaphore)
-        for ticker in all_tickers
-    ]
+    batch_size = SEMAPHORE_LIMIT * 2  # Process 10 tickers at a time (5 concurrent × 2)
+    results = []
     
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    for i in range(0, len(all_tickers), batch_size):
+        batch_tickers = all_tickers[i:i + batch_size]
+        batch_tasks = [
+            fetch_dcf_for_ticker(ticker, fetcher, statements_store, semaphore)
+            for ticker in batch_tickers
+        ]
+        
+        batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+        results.extend(batch_results)
+        
+        # Add small delay between batches to avoid rate limits
+        if i + batch_size < len(all_tickers):
+            await asyncio.sleep(1)  # 1 second delay between batches
+        
+        if (i + batch_size) % 100 == 0:
+            print(f"Processed {min(i + batch_size, len(all_tickers))}/{len(all_tickers)} tickers...")
     
     # Process results
     successful = 0
