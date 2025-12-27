@@ -88,7 +88,7 @@ async def ingest_all_dcf() -> Dict[str, Any]:
     print()
     
     # Initialize stores
-    fetcher = get_financial_fetcher(provider=DataProvider.FMP)
+    fetcher = get_financial_fetcher(preferred_provider=DataProvider.FMP)
     statements_store = get_financial_statements_store()
     semaphore = asyncio.Semaphore(SEMAPHORE_LIMIT)
     
