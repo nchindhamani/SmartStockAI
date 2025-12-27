@@ -213,6 +213,7 @@ async def ingest_all_dcf_task() -> Dict[str, Any]:
             rows_updated=rows_updated,
             metadata={
                 "total_tickers": result.get("total_tickers", 0),
+                "tickers_processed": result.get("tickers_processed", 0),
                 "successful": result.get("successful", 0),
                 "failed": result.get("failed", 0),
                 "duration_seconds": result.get("duration_seconds", 0)

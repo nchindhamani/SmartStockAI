@@ -75,8 +75,12 @@ async def ingest_all_dcf() -> Dict[str, Any]:
     # Get tickers that need DCF updates (missing DCF or stale >7 days)
     with get_connection() as conn:
         cursor = conn.cursor()
-        cutoff_date = datetime.now().date() - timedelta(days=7)
         
+        # Get total count for reporting
+        cursor.execute("SELECT COUNT(DISTINCT ticker) FROM stock_prices")
+        total_tickers = cursor.fetchone()[0]
+        
+        cutoff_date = datetime.now().date() - timedelta(days=7)
         cursor.execute("""
             SELECT DISTINCT sp.ticker 
             FROM stock_prices sp
@@ -86,10 +90,6 @@ async def ingest_all_dcf() -> Dict[str, Any]:
             ORDER BY sp.ticker
         """, (cutoff_date,))
         all_tickers = [row[0] for row in cursor.fetchall()]
-        
-        # Get total count for reporting
-        cursor.execute("SELECT COUNT(DISTINCT ticker) FROM stock_prices")
-        total_tickers = cursor.fetchone()[0]
     
     print(f"Found {total_tickers} total tickers")
     print(f"Tickers needing DCF update: {len(all_tickers)}")
@@ -162,7 +162,8 @@ async def ingest_all_dcf() -> Dict[str, Any]:
             print(f"  - {error}")
     
     return {
-        "total_tickers": len(all_tickers),
+        "total_tickers": total_tickers,
+        "tickers_processed": len(all_tickers),
         "successful": successful,
         "failed": failed,
         "duration_seconds": duration,
