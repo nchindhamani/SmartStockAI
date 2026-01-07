@@ -606,8 +606,7 @@ class FinancialDataFetcher:
                     # INCOME_STATEMENT metrics
                     ("revenue_growth", item.get("revenueGrowth"), "%"),
                     ("gross_profit_growth", item.get("grossProfitGrowth"), "%"),
-                    ("gross_margin_growth", item.get("grossProfitRatioGrowth"), "%"),  # NEW
-                    ("ebitda_growth", item.get("ebitdaGrowth"), "%"),  # NEW
+                    ("ebitda_growth", item.get("ebitdaGrowth"), "%"),  # EBITDA growth - getting richer
                     ("operating_income_growth", item.get("operatingIncomeGrowth"), "%"),
                     ("net_income_growth", item.get("netIncomeGrowth"), "%"),
                     ("eps_growth", item.get("epsgrowth"), "%"),

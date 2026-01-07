@@ -14,8 +14,7 @@ METRIC_CATEGORIES = [
     # INCOME_STATEMENT
     ("revenue_growth", "INCOME_STATEMENT", "Revenue growth percentage"),
     ("gross_profit_growth", "INCOME_STATEMENT", "Gross profit growth percentage"),
-    ("gross_margin_growth", "INCOME_STATEMENT", "Gross margin growth percentage"),
-    ("ebitda_growth", "INCOME_STATEMENT", "EBITDA growth percentage"),
+    ("ebitda_growth", "INCOME_STATEMENT", "EBITDA growth percentage - getting richer"),
     ("operating_income_growth", "INCOME_STATEMENT", "Operating income growth percentage"),
     ("net_income_growth", "INCOME_STATEMENT", "Net income growth percentage"),
     ("eps_growth", "INCOME_STATEMENT", "Earnings per share growth"),
@@ -211,7 +210,23 @@ def migrate_metric_categories():
         except Exception as e:
             print(f"⚠️  Index: {e}")
         
-        # Step 7: Summary
+        # Step 7: Cleanup - Remove gross_margin_growth (no longer needed)
+        print("\nStep 7: Cleaning up deprecated metrics...")
+        try:
+            cursor.execute("""
+                DELETE FROM metric_categories 
+                WHERE metric_name = 'gross_margin_growth'
+            """)
+            if cursor.rowcount > 0:
+                conn.commit()
+                print(f"✅ Removed gross_margin_growth from metric_categories ({cursor.rowcount} row)")
+            else:
+                print("✅ gross_margin_growth not found in metric_categories (already clean)")
+        except Exception as e:
+            print(f"⚠️  Cleanup: {e}")
+            conn.rollback()
+        
+        # Step 8: Summary
         print("\n" + "=" * 80)
         print("MIGRATION SUMMARY")
         print("=" * 80)

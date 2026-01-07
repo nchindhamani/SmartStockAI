@@ -69,12 +69,53 @@ Instructions:
 1. Provide a direct, side-by-side comparison of the companies.
 2. Address "Is it a good time to buy?" by looking at DCF upside and relative valuation (P/E).
 3. Be definitive but professional. Mention which stock shows better growth vs value characteristics.
-4. When analyzing growth, distinguish between revenue growth (getting bigger) and EBITDA growth (getting richer).
+4. **Strategic Metric Usage:**
+   - **Revenue growth**: Use to assess if the company is "getting bigger" (top-line expansion)
+   - **EBITDA growth**: Use strategically when analyzing profitability or "getting richer" - only reference when:
+     * The query explicitly asks about profitability, margins, or "getting richer"
+     * You're comparing profitability between companies
+     * Revenue growth is strong but you want to assess if profits are keeping pace
+   - Do NOT overuse EBITDA growth just because it's available - use it where it adds analytical value
 5. Include inline citations [1], [2] referencing the sources provided.
 6. If one stock is clearly superior in a certain metric, state it clearly.
 7. **IMPORTANT**: If any metric values seem unusually high or low (e.g., revenue growth > 50% for a mature company, negative growth when positive is expected), note this as a potential data quality issue and recommend verifying with official filings.
 
 Respond with a sophisticated investment synthesis. Include citations."""
+
+
+def select_relevant_metrics_by_category(metrics: List[str]) -> Optional[List[str]]:
+    """
+    Intelligently select relevant metric categories based on query intent.
+    Returns list of categories to fetch, or None to fetch all.
+    """
+    if not metrics:
+        return None
+    
+    metrics_lower = [m.lower() for m in metrics]
+    categories = []
+    
+    # Profitability/profit-focused queries -> INCOME_STATEMENT
+    if any(keyword in " ".join(metrics_lower) for keyword in 
+           ["profit", "margin", "ebitda", "richer", "profitability", "earnings", "income"]):
+        categories.append("INCOME_STATEMENT")
+    
+    # Growth-focused queries -> INCOME_STATEMENT
+    if any(keyword in " ".join(metrics_lower) for keyword in 
+           ["growth", "revenue", "bigger", "expansion"]):
+        categories.append("INCOME_STATEMENT")
+    
+    # Financial health queries -> BALANCE_SHEET
+    if any(keyword in " ".join(metrics_lower) for keyword in 
+           ["asset", "liability", "debt", "balance", "health", "equity"]):
+        categories.append("BALANCE_SHEET")
+    
+    # Liquidity/cash queries -> CASH_FLOW
+    if any(keyword in " ".join(metrics_lower) for keyword in 
+           ["cash", "liquidity", "flow", "fcf", "operating cash"]):
+        categories.append("CASH_FLOW")
+    
+    # If no specific intent detected, return None to fetch all
+    return list(set(categories)) if categories else None
 
 
 def get_top_stocks_from_index(index_name: str, num_stocks: int, metrics: List[str]) -> List[str]:
@@ -193,30 +234,51 @@ def compare_financial_data(
     for ticker in tickers[:3]:  # Limit to 3 tickers
         structured_data[ticker] = {}
         
-        # 1. Fetch from MetricsStore (General) - but validate and fetch fresh if needed
+        # 1. Fetch from MetricsStore using category-aware methods - but validate and fetch fresh if needed
         try:
-            db_metrics = metrics_store.get_all_metrics(ticker)
+            # Intelligently select relevant categories based on query intent
+            relevant_categories = select_relevant_metrics_by_category(metrics)
+            
+            # Get metrics grouped by category for better organization
+            metrics_by_category = metrics_store.get_all_metrics_with_categories(
+                ticker, 
+                categories=relevant_categories if relevant_categories else None
+            )
+            
             has_suspicious_data = False
             
-            for m in db_metrics:
-                metric_name = m["metric_name"]
-                metric_value = m["metric_value"]
-                
-                # Data validation: Flag suspicious values
-                if "revenue_growth" in metric_name.lower():
-                    # Revenue growth > 50% for banks/financials is suspicious
-                    if abs(float(metric_value)) > 50:
-                        print(f"[Comparison Tool] WARNING: Suspicious revenue growth for {ticker}: {metric_value}%")
-                        has_suspicious_data = True
-                
-                # Match requested metrics or common important ones
-                if any(req.lower() in metric_name.lower() for req in metrics) or \
-                   metric_name in ["current_price", "pe_ratio", "revenue_growth", "gross_margin"]:
-                    structured_data[ticker][metric_name] = {
-                        "value": m["metric_value"],
-                        "unit": m["metric_unit"] or "",
-                        "period": m["period"]
-                    }
+            # Process metrics by category for better organization
+            for category, category_metrics in metrics_by_category.items():
+                for m in category_metrics:
+                    metric_name = m["metric_name"]
+                    metric_value = m["metric_value"]
+                    
+                    # Data validation: Flag suspicious values
+                    if "revenue_growth" in metric_name.lower():
+                        # Revenue growth > 50% for banks/financials is suspicious
+                        if abs(float(metric_value)) > 50:
+                            print(f"[Comparison Tool] WARNING: Suspicious revenue growth for {ticker}: {metric_value}%")
+                            has_suspicious_data = True
+                    
+                    # Match requested metrics or strategically important ones
+                    should_include = (
+                        any(req.lower() in metric_name.lower() for req in metrics) or
+                        metric_name in ["current_price", "pe_ratio", "revenue_growth", "gross_margin"] or
+                        # Include ebitda_growth only when analyzing profitability or when explicitly requested
+                        (metric_name == "ebitda_growth" and (
+                            any("profit" in req.lower() or "richer" in req.lower() or "ebitda" in req.lower() 
+                                for req in metrics) or
+                            any("profitability" in m.lower() or "margin" in m.lower() for m in metrics)
+                        ))
+                    )
+                    
+                    if should_include:
+                        structured_data[ticker][metric_name] = {
+                            "value": m["metric_value"],
+                            "unit": m["metric_unit"] or "",
+                            "period": m["period"],
+                            "category": category  # Include category for context
+                        }
             
             # If suspicious data or missing key metrics, try fetching fresh from API
             if has_suspicious_data or not any("revenue_growth" in k.lower() for k in structured_data[ticker].keys()):
@@ -225,8 +287,17 @@ def compare_financial_data(
                     fresh_metrics = await financial_fetcher.get_financial_metrics(ticker, quarters=4)
                     for fm in fresh_metrics:
                         metric_name = fm.metric_name
-                        if any(req.lower() in metric_name.lower() for req in metrics) or \
-                           metric_name in ["revenue_growth", "pe_ratio", "gross_margin"]:
+                        should_include = (
+                            any(req.lower() in metric_name.lower() for req in metrics) or
+                            metric_name in ["revenue_growth", "pe_ratio", "gross_margin"] or
+                            # Include ebitda_growth strategically
+                            (metric_name == "ebitda_growth" and (
+                                any("profit" in req.lower() or "richer" in req.lower() or "ebitda" in req.lower() 
+                                    for req in metrics) or
+                                any("profitability" in m.lower() or "margin" in m.lower() for m in metrics)
+                            ))
+                        )
+                        if should_include:
                             # Override with fresh data
                             structured_data[ticker][metric_name] = {
                                 "value": fm.value,
@@ -244,7 +315,17 @@ def compare_financial_data(
                 fresh_metrics = await financial_fetcher.get_financial_metrics(ticker, quarters=4)
                 for fm in fresh_metrics:
                     metric_name = fm.metric_name
-                    if any(req.lower() in metric_name.lower() for req in metrics):
+                    should_include = (
+                        any(req.lower() in metric_name.lower() for req in metrics) or
+                        metric_name in ["revenue_growth", "pe_ratio", "gross_margin"] or
+                        # Include ebitda_growth strategically
+                        (metric_name == "ebitda_growth" and (
+                            any("profit" in req.lower() or "richer" in req.lower() or "ebitda" in req.lower() 
+                                for req in metrics) or
+                            any("profitability" in m.lower() or "margin" in m.lower() for m in metrics)
+                        ))
+                    )
+                    if should_include:
                         structured_data[ticker][metric_name] = {
                             "value": fm.value,
                             "unit": fm.unit or "",
@@ -293,7 +374,17 @@ def compare_financial_data(
             print(f"[Comparison Tool] StatementsStore error for {ticker}: {e}")
         
         # Format for synthesis and result metrics
+        # Intelligently include ebitda_growth only when relevant
+        include_ebitda = any(
+            "profit" in m.lower() or "richer" in m.lower() or "ebitda" in m.lower() or 
+            "profitability" in m.lower() or "margin" in m.lower()
+            for m in metrics
+        )
+        
         important_keys = ["dcf_upside", "revenue_growth", "pe_ratio", "current_price", "net_margin"]
+        if include_ebitda and "ebitda_growth" in structured_data[ticker]:
+            important_keys.append("ebitda_growth")
+        
         for key in important_keys:
             if key in structured_data[ticker]:
                 data = structured_data[ticker][key]
