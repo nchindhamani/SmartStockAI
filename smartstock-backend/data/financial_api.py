@@ -603,22 +603,32 @@ class FinancialDataFetcher:
                 
                 # Extract growth metrics from financial-growth endpoint
                 metric_mappings = [
+                    # INCOME_STATEMENT metrics
                     ("revenue_growth", item.get("revenueGrowth"), "%"),
                     ("gross_profit_growth", item.get("grossProfitGrowth"), "%"),
+                    ("gross_margin_growth", item.get("grossProfitRatioGrowth"), "%"),  # NEW
+                    ("ebitda_growth", item.get("ebitdaGrowth"), "%"),  # NEW
                     ("operating_income_growth", item.get("operatingIncomeGrowth"), "%"),
                     ("net_income_growth", item.get("netIncomeGrowth"), "%"),
                     ("eps_growth", item.get("epsgrowth"), "%"),
                     ("eps_diluted_growth", item.get("epsdilutedGrowth"), "%"),
-                    ("operating_cash_flow_growth", item.get("operatingCashFlowGrowth"), "%"),
-                    ("free_cash_flow_growth", item.get("freeCashFlowGrowth"), "%"),
-                    ("asset_growth", item.get("assetGrowth"), "%"),
-                    ("debt_growth", item.get("debtGrowth"), "%"),
-                    ("book_value_per_share_growth", item.get("bookValueperShareGrowth"), "%"),
-                    ("dividend_per_share_growth", item.get("dividendsperShareGrowth"), "%"),
-                    ("receivables_growth", item.get("receivablesGrowth"), "%"),
-                    ("inventory_growth", item.get("inventoryGrowth"), "%"),
                     ("rd_expense_growth", item.get("rdexpenseGrowth"), "%"),
                     ("sga_expenses_growth", item.get("sgaexpensesGrowth"), "%"),
+                    
+                    # BALANCE_SHEET metrics
+                    ("total_assets_growth", item.get("assetGrowth"), "%"),
+                    ("asset_growth", item.get("assetGrowth"), "%"),  # Alias
+                    ("receivables_growth", item.get("receivablesGrowth"), "%"),
+                    ("inventory_growth", item.get("inventoryGrowth"), "%"),
+                    ("debt_growth", item.get("debtGrowth"), "%"),
+                    ("book_value_per_share_growth", item.get("bookValueperShareGrowth"), "%"),
+                    
+                    # CASH_FLOW metrics
+                    ("operating_cash_flow_growth", item.get("operatingCashFlowGrowth"), "%"),
+                    ("free_cash_flow_growth", item.get("freeCashFlowGrowth"), "%"),
+                    
+                    # OTHER metrics
+                    ("dividend_per_share_growth", item.get("dividendsperShareGrowth"), "%"),
                 ]
                 
                 for name, value, unit in metric_mappings:

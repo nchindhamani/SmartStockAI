@@ -47,7 +47,18 @@ class MetricsStore:
                 )
             """)
             
+            # Metric categories lookup table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS metric_categories (
+                    metric_name VARCHAR(100) PRIMARY KEY,
+                    category VARCHAR(50) NOT NULL,
+                    description TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
             # Financial metrics table (ratios, growth rates, etc.)
+            # Note: category is stored in metric_categories table, not here
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS financial_metrics (
                     id SERIAL PRIMARY KEY,
@@ -59,9 +70,29 @@ class MetricsStore:
                     period_end_date DATE,
                     source VARCHAR(100),
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(ticker, metric_name, period_end_date)
+                    UNIQUE(ticker, metric_name, period, period_end_date)
                 )
             """)
+            
+            # Add foreign key constraint separately (may not exist if metric_categories is empty)
+            try:
+                cursor.execute("""
+                    DO $$ 
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1 FROM pg_constraint 
+                            WHERE conname = 'fk_financial_metrics_metric_name'
+                        ) THEN
+                            ALTER TABLE financial_metrics 
+                            ADD CONSTRAINT fk_financial_metrics_metric_name 
+                            FOREIGN KEY (metric_name) 
+                            REFERENCES metric_categories(metric_name);
+                        END IF;
+                    END $$;
+                """)
+            except Exception:
+                # Foreign key will be added by migration script
+                pass
             
             # Company info table
             cursor.execute("""
@@ -99,6 +130,10 @@ class MetricsStore:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_metrics_ticker 
                 ON financial_metrics(ticker)
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_metric_categories_category 
+                ON metric_categories(category)
             """)
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_ratings_ticker 
@@ -340,11 +375,10 @@ class MetricsStore:
                 INSERT INTO financial_metrics
                 (ticker, metric_name, metric_value, metric_unit, period, period_end_date, source)
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (ticker, metric_name, period_end_date)
+                ON CONFLICT (ticker, metric_name, period, period_end_date)
                 DO UPDATE SET
                     metric_value = EXCLUDED.metric_value,
                     metric_unit = EXCLUDED.metric_unit,
-                    period = EXCLUDED.period,
                     source = EXCLUDED.source
             """, (ticker.upper(), metric_name, metric_value, metric_unit, period, period_end_date, source))
             return cursor.rowcount > 0
@@ -389,6 +423,123 @@ class MetricsStore:
             """, (ticker.upper(),))
             columns = [desc[0] for desc in cursor.description]
             return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    
+    def get_metric_category(self, metric_name: str) -> Optional[str]:
+        """Get category for a metric name."""
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT category 
+                FROM metric_categories 
+                WHERE metric_name = %s
+            """, (metric_name,))
+            row = cursor.fetchone()
+            return row[0] if row else None
+    
+    def get_metrics_by_category(
+        self, 
+        ticker: str, 
+        category: str,
+        period: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Get all metrics for a ticker filtered by category."""
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            
+            query = """
+                SELECT 
+                    fm.*,
+                    mc.category,
+                    mc.description
+                FROM financial_metrics fm
+                JOIN metric_categories mc ON fm.metric_name = mc.metric_name
+                WHERE fm.ticker = %s AND mc.category = %s
+            """
+            params = [ticker.upper(), category]
+            
+            if period:
+                query += " AND fm.period = %s"
+                params.append(period)
+            
+            query += " ORDER BY fm.period_end_date DESC, fm.metric_name"
+            
+            cursor.execute(query, params)
+            columns = [desc[0] for desc in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    
+    def get_all_metrics_with_categories(
+        self, 
+        ticker: str,
+        categories: Optional[List[str]] = None
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Get all metrics grouped by category."""
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            
+            query = """
+                SELECT 
+                    fm.*,
+                    mc.category,
+                    mc.description
+                FROM financial_metrics fm
+                JOIN metric_categories mc ON fm.metric_name = mc.metric_name
+                WHERE fm.ticker = %s
+            """
+            params = [ticker.upper()]
+            
+            if categories:
+                query += " AND mc.category = ANY(%s)"
+                params.append(categories)
+            
+            query += " ORDER BY mc.category, fm.period_end_date DESC"
+            
+            cursor.execute(query, params)
+            columns = [desc[0] for desc in cursor.description]
+            rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+            
+            # Group by category
+            grouped = {}
+            for row in rows:
+                cat = row["category"]
+                if cat not in grouped:
+                    grouped[cat] = []
+                grouped[cat].append(row)
+            
+            return grouped
+    
+    def get_latest_metrics_by_category(
+        self,
+        ticker: str,
+        category: str
+    ) -> Dict[str, Any]:
+        """Get latest metrics for a category (most recent period_end_date)."""
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT 
+                    fm.metric_name,
+                    fm.metric_value,
+                    fm.metric_unit,
+                    fm.period,
+                    fm.period_end_date,
+                    mc.category
+                FROM financial_metrics fm
+                JOIN metric_categories mc ON fm.metric_name = mc.metric_name
+                WHERE fm.ticker = %s 
+                  AND mc.category = %s
+                  AND fm.period_end_date = (
+                      SELECT MAX(period_end_date) 
+                      FROM financial_metrics 
+                      WHERE ticker = %s
+                  )
+                ORDER BY fm.metric_name
+            """, (ticker.upper(), category, ticker.upper()))
+            
+            columns = [desc[0] for desc in cursor.description]
+            rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+            
+            # Convert to dict keyed by metric_name
+            return {row["metric_name"]: row for row in rows}
     
     def compare_metrics(
         self,

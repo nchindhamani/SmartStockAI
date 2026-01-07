@@ -55,6 +55,13 @@ Requested Focus: {metrics}
 STRUCTURED DATA (from premium database):
 {structured_data}
 
+The data is organized by category:
+- INCOME_STATEMENT: Revenue growth, EBITDA growth, profit margins (profitability metrics)
+  * Revenue growth tells you if the company is getting bigger
+  * EBITDA growth tells you if the company is getting richer (more profitable)
+- BALANCE_SHEET: Asset growth, liability trends (financial health metrics)
+- CASH_FLOW: Operating cash flow, free cash flow (liquidity metrics)
+
 QUALITATIVE CONTEXT (from SEC filings/earnings):
 {qualitative_context}
 
@@ -62,9 +69,10 @@ Instructions:
 1. Provide a direct, side-by-side comparison of the companies.
 2. Address "Is it a good time to buy?" by looking at DCF upside and relative valuation (P/E).
 3. Be definitive but professional. Mention which stock shows better growth vs value characteristics.
-4. Include inline citations [1], [2] referencing the sources provided.
-5. If one stock is clearly superior in a certain metric, state it clearly.
-6. **IMPORTANT**: If any metric values seem unusually high or low (e.g., revenue growth > 50% for a mature company, negative growth when positive is expected), note this as a potential data quality issue and recommend verifying with official filings.
+4. When analyzing growth, distinguish between revenue growth (getting bigger) and EBITDA growth (getting richer).
+5. Include inline citations [1], [2] referencing the sources provided.
+6. If one stock is clearly superior in a certain metric, state it clearly.
+7. **IMPORTANT**: If any metric values seem unusually high or low (e.g., revenue growth > 50% for a mature company, negative growth when positive is expected), note this as a potential data quality issue and recommend verifying with official filings.
 
 Respond with a sophisticated investment synthesis. Include citations."""
 
