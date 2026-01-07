@@ -71,11 +71,11 @@ Instructions:
 3. Be definitive but professional. Mention which stock shows better growth vs value characteristics.
 4. **Strategic Metric Usage:**
    - **Revenue growth**: Use to assess if the company is "getting bigger" (top-line expansion)
-   - **EBITDA growth**: Use strategically when analyzing profitability or "getting richer" - only reference when:
+   - **EBITDA growth**: Use when analyzing profitability or "getting richer" - reference when:
      * The query explicitly asks about profitability, margins, or "getting richer"
      * You're comparing profitability between companies
      * Revenue growth is strong but you want to assess if profits are keeping pace
-   - Do NOT overuse EBITDA growth just because it's available - use it where it adds analytical value
+   - Use metrics where they add analytical value to the specific question being asked
 5. Include inline citations [1], [2] referencing the sources provided.
 6. If one stock is clearly superior in a certain metric, state it clearly.
 7. **IMPORTANT**: If any metric values seem unusually high or low (e.g., revenue growth > 50% for a mature company, negative growth when positive is expected), note this as a potential data quality issue and recommend verifying with official filings.
