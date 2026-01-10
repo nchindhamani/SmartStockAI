@@ -374,9 +374,15 @@ The SmartStock AI system uses **PostgreSQL** as the primary database for structu
 - `revenue_estimated` (DOUBLE PRECISION) - Estimated revenue
 - `surprise_percent` (DOUBLE PRECISION) - Surprise percentage
 
-**Unique Constraint:** `(ticker, date)`
+**Unique Constraint:** `(ticker, date)` - One record per ticker per earnings date
 
-**Source:** FMP API
+**Indexes:**
+- `idx_earnings_data_ticker` on `ticker` - For fast ticker lookups
+- `idx_earnings_data_date` on `date` - For date range queries
+
+**Source:** FMP API (`/stable/earnings-calendar`)
+
+**Ingestion Script:** `scripts/ingest_earnings_surprises.py`
 
 ---
 
