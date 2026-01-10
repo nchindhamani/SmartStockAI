@@ -226,43 +226,106 @@ The SmartStock AI system uses **PostgreSQL** as the primary database for structu
 
 ### 8. `analyst_ratings`
 
-**Purpose:** Analyst recommendations and price targets.
+**Purpose:** Analyst recommendations and price targets with expert-level fields for consensus analysis and momentum tracking.
 
 **Key Fields:**
-- `ticker` (VARCHAR(10)) - Stock ticker
+- `ticker` (VARCHAR(10)) - Stock ticker symbol
 - `analyst` (VARCHAR(200)) - Analyst or firm name
-- `rating` (VARCHAR(50)) - Rating (e.g., 'Buy', 'Hold', 'Sell')
+- `rating` (VARCHAR(50)) - Rating (e.g., 'Buy', 'Hold', 'Sell', 'Strong Buy', 'Strong Sell')
 - `price_target` (DOUBLE PRECISION) - Price target
+- `adjusted_price_target` (DOUBLE PRECISION) - Adjusted target accounting for splits/dividends (safer for backtesting)
 - `rating_date` (DATE) - Rating date
-- `action` (VARCHAR(100)) - Action (e.g., 'Upgraded', 'Downgraded')
+- `action` (VARCHAR(100)) - Action (e.g., 'Upgrade', 'Downgrade', 'Initiate', 'Maintain') - primary sentiment trigger
+- `previous_rating` (VARCHAR(50)) - Previous rating (enables "Upgraded from Hold to Buy" analysis)
+- `news_publisher` (VARCHAR(200)) - Publisher/firm name (adds weight to recommendation)
+- `period` (VARCHAR(10)) - Time horizon (e.g., '12M', '6M') - helps Agent understand time frame
 
-**Source:** FMP API (`/stable/analyst-stock-recommendations/{ticker}`)
+**Note:** No unique constraint on date - multiple firms can issue ratings on the same day.
+
+**Indexes:** `idx_ratings_ticker`, `idx_ratings_ticker_date`, `idx_ratings_analyst`
+
+**Source:** FMP API (`/stable/grades?symbol={ticker}`)
+
+**Note:** The `/stable/grades` endpoint provides individual analyst grade changes with grading company, previous/new grades, and action (maintain, upgrade, downgrade). This endpoint does not include price targets (those are available in the `analyst_consensus` table).
 
 ---
 
 ### 9. `analyst_estimates`
 
-**Purpose:** Revenue and EPS estimates from analysts.
+**Purpose:** Revenue, EPS, EBIT, and Net Income estimates from analysts with forecast dispersion metric.
 
 **Key Fields:**
-- `ticker` (VARCHAR(10)) - Stock ticker
-- `date` (DATE) - Estimate date
+- `ticker` (VARCHAR(10)) - Stock ticker symbol
+- `date` (DATE) - Estimate date (quarter/period end date)
 - `estimated_revenue_avg` (DOUBLE PRECISION) - Average revenue estimate
 - `estimated_revenue_low` (DOUBLE PRECISION) - Low revenue estimate
 - `estimated_revenue_high` (DOUBLE PRECISION) - High revenue estimate
 - `estimated_eps_avg` (DOUBLE PRECISION) - Average EPS estimate
 - `estimated_eps_low` (DOUBLE PRECISION) - Low EPS estimate
 - `estimated_eps_high` (DOUBLE PRECISION) - High EPS estimate
+- `estimated_ebit_avg` (DOUBLE PRECISION) - Average EBIT estimate (operational performance before tax/interest)
+- `estimated_net_income_avg` (DOUBLE PRECISION) - Average Net Income estimate (for EPS sanity checks)
+- `forecast_dispersion` (DOUBLE PRECISION) - Calculated as (High - Low) / Avg - measures analyst disagreement (high dispersion predicts volatility)
+- `actual_eps` (DOUBLE PRECISION) - Actual EPS once reported (enables beat/miss tracking)
 - `number_of_analysts_revenue` (INTEGER) - Number of analysts for revenue
 - `number_of_analysts_eps` (INTEGER) - Number of analysts for EPS
 
-**Unique Constraint:** `(ticker, date)`
+**Unique Constraint:** `(ticker, date)` - Uses `ON CONFLICT DO UPDATE` to ensure most refreshed consensus
+
+**Indexes:** `idx_estimates_ticker_date`
 
 **Source:** FMP API (`/stable/analyst-estimates/{ticker}`)
 
 ---
 
-### 10. `dividends`
+### 10. `analyst_consensus`
+
+**Purpose:** Aggregated analyst consensus data including grades breakdown, price target consensus, and historical price target trends.
+
+**Key Fields:**
+
+**Grades Consensus:**
+- `strong_buy` (INTEGER) - Number of analysts with Strong Buy rating
+- `buy` (INTEGER) - Number of analysts with Buy rating
+- `hold` (INTEGER) - Number of analysts with Hold rating
+- `sell` (INTEGER) - Number of analysts with Sell rating
+- `strong_sell` (INTEGER) - Number of analysts with Strong Sell rating
+- `consensus_rating` (VARCHAR(50)) - Overall consensus rating (e.g., "Buy", "Hold")
+
+**Price Target Consensus:**
+- `target_high` (DOUBLE PRECISION) - Highest price target
+- `target_low` (DOUBLE PRECISION) - Lowest price target
+- `target_consensus` (DOUBLE PRECISION) - Consensus/average price target
+- `target_median` (DOUBLE PRECISION) - Median price target
+
+**Price Target Summary (Historical Trends):**
+- `last_month_count` (INTEGER) - Number of analysts in last month
+- `last_month_avg_price_target` (DOUBLE PRECISION) - Average price target (last month)
+- `last_quarter_count` (INTEGER) - Number of analysts in last quarter
+- `last_quarter_avg_price_target` (DOUBLE PRECISION) - Average price target (last quarter)
+- `last_year_count` (INTEGER) - Number of analysts in last year
+- `last_year_avg_price_target` (DOUBLE PRECISION) - Average price target (last year)
+- `all_time_count` (INTEGER) - Total number of analysts (all time)
+- `all_time_avg_price_target` (DOUBLE PRECISION) - Average price target (all time)
+- `publishers` (TEXT) - JSON array of news publishers/analyst firms
+
+**Unique Constraint:** `(ticker)` - One consensus record per ticker (updated on each ingestion)
+
+**Indexes:** `idx_analyst_consensus_ticker`
+
+**Source:** FMP API:
+- `/stable/grades-consensus?symbol={ticker}`
+- `/stable/price-target-consensus?symbol={ticker}`
+- `/stable/price-target-summary?symbol={ticker}`
+
+**Use Cases:**
+- Quick sentiment overview: "67 analysts rate AAPL as Buy, 34 Hold, 7 Sell"
+- Price target analysis: "AAPL consensus target is $298.80 vs current $250 → 19.5% upside"
+- Trend analysis: "Price targets increased from $270 (last year) to $301 (last quarter) → bullish momentum"
+
+---
+
+### 11. `dividends`
 
 **Purpose:** Historical dividend payment data.
 
@@ -281,7 +344,7 @@ The SmartStock AI system uses **PostgreSQL** as the primary database for structu
 
 ---
 
-### 11. `stock_splits`
+### 12. `stock_splits`
 
 **Purpose:** Historical stock split data.
 
