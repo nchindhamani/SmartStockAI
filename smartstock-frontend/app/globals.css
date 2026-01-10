@@ -78,6 +78,38 @@
   .transition-smooth {
     transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   }
+  
+  /* Markdown content styling */
+  .markdown-content {
+    @apply text-neutral-800;
+  }
+  
+  .markdown-content h1,
+  .markdown-content h2,
+  .markdown-content h3 {
+    @apply font-bold text-neutral-900;
+  }
+  
+  .markdown-content p {
+    @apply mb-4 leading-relaxed;
+  }
+  
+  .markdown-content ul,
+  .markdown-content ol {
+    @apply mb-4 space-y-2;
+  }
+  
+  .markdown-content li {
+    @apply mb-1;
+  }
+  
+  .markdown-content strong {
+    @apply font-semibold text-neutral-900;
+  }
+  
+  .markdown-content em {
+    @apply italic text-neutral-700;
+  }
 }
 
 /* Smooth scrolling */

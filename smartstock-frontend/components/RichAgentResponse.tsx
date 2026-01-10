@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { AgentResponse, Metrics, Citation } from '@/types';
 import { FileText, BarChart3, BookOpen, TrendingUp, TrendingDown, Minus } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
 
 interface RichAgentResponseProps {
   response: AgentResponse;
@@ -13,31 +14,127 @@ type TabType = 'synthesis' | 'metrics' | 'sources';
 
 export default function RichAgentResponse({ response, onCitationClick }: RichAgentResponseProps) {
   const [activeTab, setActiveTab] = useState<TabType>('synthesis');
-
-  // Parse synthesis text to render inline citations as clickable
-  const renderSynthesisWithCitations = (text: string) => {
-    const parts = text.split(/(\[\d+\])/g);
-    return parts.map((part, index) => {
-      const match = part.match(/\[(\d+)\]/);
-      if (match) {
-        const citationId = parseInt(match[1], 10);
+  
+  // Custom components for markdown rendering
+  const markdownComponents = {
+    // Headings
+    h1: ({ children }: any) => (
+      <h1 className="text-2xl font-bold text-neutral-900 mt-8 mb-4 pb-2 border-b border-neutral-200">
+        {children}
+      </h1>
+    ),
+    h2: ({ children }: any) => (
+      <h2 className="text-xl font-bold text-neutral-900 mt-6 mb-3">
+        {children}
+      </h2>
+    ),
+    h3: ({ children }: any) => (
+      <h3 className="text-lg font-semibold text-neutral-900 mt-5 mb-2">
+        {children}
+      </h3>
+    ),
+    // Paragraphs
+    p: ({ children }: any) => (
+      <p className="text-neutral-800 leading-relaxed mb-4 text-base">
+        {children}
+      </p>
+    ),
+    // Strong/Bold text
+    strong: ({ children }: any) => (
+      <strong className="font-semibold text-neutral-900">{children}</strong>
+    ),
+    // Emphasis/Italic
+    em: ({ children }: any) => (
+      <em className="italic text-neutral-700">{children}</em>
+    ),
+    // Lists
+    ul: ({ children }: any) => (
+      <ul className="list-disc list-inside space-y-2 mb-4 text-neutral-800 ml-4">
+        {children}
+      </ul>
+    ),
+    ol: ({ children }: any) => (
+      <ol className="list-decimal list-inside space-y-2 mb-4 text-neutral-800 ml-4">
+        {children}
+      </ol>
+    ),
+    li: ({ children }: any) => (
+      <li className="mb-1">{children}</li>
+    ),
+    // Code blocks
+    code: ({ inline, children, ...props }: any) => {
+      if (inline) {
         return (
-          <button
-            key={index}
-            onClick={() => {
-              setActiveTab('sources');
-              onCitationClick?.(citationId);
-            }}
-            className="inline-flex items-center justify-center min-w-[28px] h-6 px-1.5 mx-0.5 text-xs font-bold 
-                     text-primary-700 bg-primary-100 rounded-md hover:bg-primary-200 transition-colors
-                     border border-primary-200"
-          >
-            {citationId}
-          </button>
+          <code className="px-1.5 py-0.5 bg-neutral-100 text-neutral-800 rounded text-sm font-mono" {...props}>
+            {children}
+          </code>
         );
       }
-      return <span key={index}>{part}</span>;
-    });
+      return (
+        <code className="block p-4 bg-neutral-50 border border-neutral-200 rounded-lg text-sm font-mono overflow-x-auto mb-4" {...props}>
+          {children}
+        </code>
+      );
+    },
+    // Blockquotes
+    blockquote: ({ children }: any) => (
+      <blockquote className="border-l-4 border-primary-500 pl-4 py-2 my-4 bg-primary-50 rounded-r-lg italic text-neutral-700">
+        {children}
+      </blockquote>
+    ),
+    // Horizontal rule
+    hr: () => <hr className="my-6 border-neutral-200" />,
+    // Links
+    a: ({ href, children }: any) => (
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-primary-600 hover:text-primary-700 underline"
+      >
+        {children}
+      </a>
+    ),
+  };
+
+  // Process synthesis text: split by citations and render markdown + citation buttons
+  const renderSynthesisContent = (text: string) => {
+    // Split text by citations [1], [2], etc.
+    const parts = text.split(/(\[\d+\])/g);
+    
+    return (
+      <>
+        {parts.map((part, index) => {
+          const citationMatch = part.match(/\[(\d+)\]/);
+          if (citationMatch) {
+            // Render citation button
+            const citationId = parseInt(citationMatch[1], 10);
+            return (
+              <button
+                key={`cite-${index}`}
+                onClick={() => {
+                  setActiveTab('sources');
+                  onCitationClick?.(citationId);
+                }}
+                className="inline-flex items-center justify-center min-w-[28px] h-6 px-1.5 mx-0.5 text-xs font-bold 
+                         text-primary-700 bg-primary-100 rounded-md hover:bg-primary-200 transition-colors
+                         border border-primary-200 cursor-pointer align-middle"
+              >
+                {citationId}
+              </button>
+            );
+          } else if (part.trim()) {
+            // Render markdown for non-citation parts
+            return (
+              <ReactMarkdown key={`md-${index}`} components={markdownComponents}>
+                {part}
+              </ReactMarkdown>
+            );
+          }
+          return null;
+        })}
+      </>
+    );
   };
 
   // Get background and text color based on color_context
@@ -140,11 +237,11 @@ export default function RichAgentResponse({ response, onCitationClick }: RichAge
 
   return (
     <div className="w-full">
-      {/* Synthesis text */}
-      <div className="prose prose-sm max-w-none mb-6">
-        <p className="text-neutral-800 leading-relaxed text-base">
-          {renderSynthesisWithCitations(response.synthesis)}
-        </p>
+      {/* Synthesis text with markdown rendering */}
+      <div className="mb-8 bg-gradient-to-br from-neutral-50 to-white rounded-2xl p-6 md:p-8 border border-neutral-200 shadow-soft">
+        <div className="prose prose-neutral max-w-none markdown-content">
+          {renderSynthesisContent(response.synthesis)}
+        </div>
       </div>
 
       {/* Enhanced Tab Navigation */}
@@ -188,9 +285,87 @@ export default function RichAgentResponse({ response, onCitationClick }: RichAge
               <BarChart3 className="w-4 h-4" />
               Key Metrics
             </h4>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {response.metrics_snapshot.map((metric, index) => renderMetricCard(metric, index))}
-            </div>
+            {/* Group metrics by ticker for comparison */}
+            {(() => {
+              // Extract unique tickers from metric keys (e.g., "AAPL DCF Upside" -> "AAPL")
+              const tickers = Array.from(
+                new Set(
+                  response.metrics_snapshot
+                    .map(m => {
+                      const firstWord = m.key.split(' ')[0];
+                      // Only consider valid tickers (2-5 uppercase letters)
+                      if (firstWord.length >= 2 && firstWord.length <= 5 && firstWord === firstWord.toUpperCase()) {
+                        return firstWord;
+                      }
+                      return null;
+                    })
+                    .filter((t): t is string => t !== null)
+                )
+              );
+              
+              // Group metrics by ticker
+              const metricsByTicker = tickers.reduce((acc, ticker) => {
+                acc[ticker] = response.metrics_snapshot.filter(m => m.key.startsWith(ticker + ' '));
+                return acc;
+              }, {} as Record<string, typeof response.metrics_snapshot>);
+              
+              // Get all unique metric types (e.g., "Dcf Upside", "Revenue Growth")
+              // Extract by removing the ticker prefix
+              const metricTypes = Array.from(
+                new Set(
+                  response.metrics_snapshot.map(m => {
+                    const parts = m.key.split(' ');
+                    if (parts.length > 1) {
+                      return parts.slice(1).join(' ');
+                    }
+                    return m.key;
+                  })
+                )
+              );
+              
+              // If we have multiple tickers, show comparison view
+              if (tickers.length > 1) {
+                return (
+                  <div className="space-y-6">
+                    {metricTypes.map((metricType, typeIndex) => {
+                      // Get metrics for this type across all tickers
+                      const metricsForType = tickers
+                        .map(ticker => {
+                          const metric = metricsByTicker[ticker]?.find(m => {
+                            const metricName = m.key.split(' ').slice(1).join(' ');
+                            return metricName === metricType;
+                          });
+                          return metric ? { ticker, metric } : null;
+                        })
+                        .filter((item): item is { ticker: string; metric: typeof response.metrics_snapshot[0] } => item !== null);
+                      
+                      if (metricsForType.length === 0) return null;
+                      
+                      return (
+                        <div key={typeIndex} className="bg-neutral-50 rounded-xl p-4 border border-neutral-200">
+                          <h5 className="text-sm font-semibold text-neutral-700 mb-3">{metricType}</h5>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                            {metricsForType.map(({ ticker, metric }, idx) => (
+                              <div key={`${ticker}-${typeIndex}`} className="flex flex-col">
+                                <span className="text-xs font-medium text-neutral-500 mb-1 uppercase">{ticker}</span>
+                                {renderMetricCard(metric, typeIndex * 100 + idx)}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              }
+              
+              // Single ticker or no grouping - show all metrics
+              return (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {response.metrics_snapshot.map((metric, index) => renderMetricCard(metric, index))}
+                </div>
+              );
+            })()}
           </div>
         )}
 

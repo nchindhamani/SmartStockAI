@@ -300,3 +300,5 @@ The frontend now has a **modern, enterprise-level appearance** with:
 
 The UI is now on par with modern financial platforms like Bloomberg Terminal, Yahoo Finance, and other enterprise financial tools.
 
+
+

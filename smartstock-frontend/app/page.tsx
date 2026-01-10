@@ -90,7 +90,18 @@ export default function SmartStockAI() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    sendQuery(inputValue);
+    if (inputValue.trim() && !isLoading) {
+      sendQuery(inputValue);
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (inputValue.trim() && !isLoading) {
+        sendQuery(inputValue);
+      }
+    }
   };
 
   const handlePromptClick = (prompt: string) => {
@@ -201,6 +212,7 @@ export default function SmartStockAI() {
                     type="text"
                     value={inputValue}
                     onChange={(e) => setInputValue(e.target.value)}
+                    onKeyDown={handleKeyDown}
                     placeholder="Compare AAPL vs MSFT revenue growth..."
                     disabled={isLoading}
                     className="w-full px-6 py-5 pr-16 text-lg bg-neutral-50 border-2 border-neutral-200 rounded-2xl 
@@ -403,6 +415,7 @@ export default function SmartStockAI() {
                 type="text"
                 value={inputValue}
                 onChange={(e) => setInputValue(e.target.value)}
+                onKeyDown={handleKeyDown}
                 placeholder="Ask a follow-up question..."
                 disabled={isLoading}
                 className="w-full px-6 py-4 pr-14 text-base bg-neutral-50 border-2 border-neutral-200 
