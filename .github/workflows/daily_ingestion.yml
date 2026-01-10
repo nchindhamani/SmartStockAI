@@ -2,8 +2,11 @@ name: Daily Data Ingestion
 
 on:
   schedule:
-    # Run every day at 05:00 UTC (12:00 AM EST / 1:00 AM EDT)
-    - cron: '0 5 * * *'
+    # Run twice daily:
+    # 1. 05:00 UTC (12:00 AM EST / 1:00 AM EDT) - Fetches previous day's EOD data
+    # 2. 21:30 UTC (4:30 PM EST / 5:30 PM EDT) - Fetches today's final EOD data after market close
+    - cron: '0 5 * * *'   # After market close (previous day)
+    - cron: '30 21 * * *' # After market close (today)
   workflow_dispatch:  # Allow manual triggering
 
 jobs:
