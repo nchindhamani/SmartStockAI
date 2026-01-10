@@ -343,6 +343,61 @@ def query_cash_flow_statements(ticker: str = "AAPL", limit: int = 5):
         print_table(f"Cash Flow Statements - {ticker} (Last {limit})", headers, rows)
 
 
+def query_earnings_surprises(ticker: str = "AAPL", limit: int = 10):
+    """Query earnings surprises (actual vs estimated) for a ticker."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT 
+                date,
+                eps_actual,
+                eps_estimated,
+                surprise_percent,
+                revenue_actual,
+                revenue_estimated,
+                source
+            FROM earnings_data
+            WHERE ticker = %s
+            ORDER BY date DESC
+            LIMIT %s
+        """, (ticker, limit))
+        
+        rows = cursor.fetchall()
+        
+        # Format the rows for display
+        formatted_rows = []
+        for row in rows:
+            date_val = row[0]
+            eps_actual = f"${row[1]:.2f}" if row[1] else "N/A"
+            eps_estimated = f"${row[2]:.2f}" if row[2] else "N/A"
+            
+            # Format surprise with direction
+            if row[3] is not None:
+                surprise = row[3]
+                direction = "BEAT ✅" if surprise > 0 else "MISS ❌" if surprise < 0 else "MATCH ⚪"
+                surprise_str = f"{surprise:.2f}% ({direction})"
+            else:
+                surprise_str = "N/A"
+            
+            revenue_actual_str = f"${row[4]/1e9:.2f}B" if row[4] else "N/A"
+            revenue_est_str = f"${row[5]/1e9:.2f}B" if row[5] else "N/A"
+            source = row[6] or "N/A"
+            
+            formatted_rows.append([
+                date_val,
+                eps_actual,
+                eps_estimated,
+                surprise_str,
+                revenue_actual_str,
+                revenue_est_str,
+                source
+            ])
+        
+        headers = ["Date", "EPS Actual", "EPS Estimated", "Surprise %", 
+                  "Revenue Actual (B)", "Revenue Est (B)", "Source"]
+        print_table(f"Earnings Surprises - {ticker} (Last {limit})", headers, formatted_rows)
+
+
 def get_database_stats():
     """Get overall database statistics."""
     with get_connection() as conn:
@@ -361,6 +416,7 @@ def get_database_stats():
             ("analyst_ratings", "Analyst Ratings"),
             ("analyst_estimates", "Analyst Estimates"),
             ("analyst_consensus", "Analyst Consensus"),
+            ("earnings_data", "Earnings Surprises"),
         ]
         
         for table, name in tables:
@@ -398,6 +454,7 @@ def main():
     query_income_statements(ticker, limit=3)
     query_balance_sheets(ticker, limit=3)
     query_cash_flow_statements(ticker, limit=3)
+    query_earnings_surprises(ticker, limit=5)
     
     print("\n" + "=" * 100)
     print("✅ Query Complete!")
