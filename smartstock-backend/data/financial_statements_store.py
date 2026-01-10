@@ -179,6 +179,23 @@ class FinancialStatementsStore:
                 )
             """)
             
+            # Index membership table (many-to-many: ticker can be in multiple indices)
+            # Note: No foreign key to company_profiles to allow index membership for tickers without profiles
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS index_membership (
+                    ticker VARCHAR(10) NOT NULL,
+                    index_name VARCHAR(50) NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (ticker, index_name)
+                )
+            """)
+            
+            # Create index for fast lookups
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_index_membership_index_name 
+                ON index_membership(index_name)
+            """)
+            
             # ESG scores table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS esg_scores (
@@ -256,12 +273,55 @@ class FinancialStatementsStore:
                     estimated_eps_avg DOUBLE PRECISION,
                     estimated_eps_low DOUBLE PRECISION,
                     estimated_eps_high DOUBLE PRECISION,
+                    estimated_ebit_avg DOUBLE PRECISION,
+                    estimated_net_income_avg DOUBLE PRECISION,
+                    forecast_dispersion DOUBLE PRECISION,
+                    actual_eps DOUBLE PRECISION,
                     number_of_analysts_revenue INTEGER,
                     number_of_analysts_eps INTEGER,
                     source VARCHAR(50) DEFAULT 'FMP',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(ticker, date)
                 )
+            """)
+            
+            # Analyst consensus table (grades, price targets, summary)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS analyst_consensus (
+                    id SERIAL PRIMARY KEY,
+                    ticker VARCHAR(10) NOT NULL,
+                    -- Grades consensus
+                    strong_buy INTEGER DEFAULT 0,
+                    buy INTEGER DEFAULT 0,
+                    hold INTEGER DEFAULT 0,
+                    sell INTEGER DEFAULT 0,
+                    strong_sell INTEGER DEFAULT 0,
+                    consensus_rating VARCHAR(50),
+                    -- Price target consensus
+                    target_high DOUBLE PRECISION,
+                    target_low DOUBLE PRECISION,
+                    target_consensus DOUBLE PRECISION,
+                    target_median DOUBLE PRECISION,
+                    -- Price target summary
+                    last_month_count INTEGER,
+                    last_month_avg_price_target DOUBLE PRECISION,
+                    last_quarter_count INTEGER,
+                    last_quarter_avg_price_target DOUBLE PRECISION,
+                    last_year_count INTEGER,
+                    last_year_avg_price_target DOUBLE PRECISION,
+                    all_time_count INTEGER,
+                    all_time_avg_price_target DOUBLE PRECISION,
+                    publishers TEXT,
+                    source VARCHAR(50) DEFAULT 'FMP',
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(ticker)
+                )
+            """)
+            
+            # Create indexes for analyst_consensus
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_analyst_consensus_ticker 
+                ON analyst_consensus(ticker)
             """)
             
             # Dividends table
@@ -674,8 +734,10 @@ class FinancialStatementsStore:
                 INSERT INTO analyst_estimates
                 (ticker, date, estimated_revenue_avg, estimated_revenue_low,
                  estimated_revenue_high, estimated_eps_avg, estimated_eps_low,
-                 estimated_eps_high, number_of_analysts_revenue, number_of_analysts_eps, source)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 estimated_eps_high, estimated_ebit_avg, estimated_net_income_avg,
+                 forecast_dispersion, actual_eps, number_of_analysts_revenue, 
+                 number_of_analysts_eps, source)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (ticker, date)
                 DO UPDATE SET
                     estimated_revenue_avg = EXCLUDED.estimated_revenue_avg,
@@ -684,8 +746,13 @@ class FinancialStatementsStore:
                     estimated_eps_avg = EXCLUDED.estimated_eps_avg,
                     estimated_eps_low = EXCLUDED.estimated_eps_low,
                     estimated_eps_high = EXCLUDED.estimated_eps_high,
+                    estimated_ebit_avg = EXCLUDED.estimated_ebit_avg,
+                    estimated_net_income_avg = EXCLUDED.estimated_net_income_avg,
+                    forecast_dispersion = EXCLUDED.forecast_dispersion,
+                    actual_eps = EXCLUDED.actual_eps,
                     number_of_analysts_revenue = EXCLUDED.number_of_analysts_revenue,
-                    number_of_analysts_eps = EXCLUDED.number_of_analysts_eps
+                    number_of_analysts_eps = EXCLUDED.number_of_analysts_eps,
+                    source = EXCLUDED.source
             """, (
                 data.get("ticker", "").upper(),
                 data.get("date"),
@@ -695,11 +762,147 @@ class FinancialStatementsStore:
                 data.get("estimated_eps_avg"),
                 data.get("estimated_eps_low"),
                 data.get("estimated_eps_high"),
+                data.get("estimated_ebit_avg"),
+                data.get("estimated_net_income_avg"),
+                data.get("forecast_dispersion"),
+                data.get("actual_eps"),
                 data.get("number_of_analysts_revenue"),
                 data.get("number_of_analysts_eps"),
                 data.get("source", "FMP")
             ))
             return cursor.rowcount > 0
+    
+    def get_analyst_estimates(self, ticker: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """Get analyst estimates for a ticker."""
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT 
+                    date, estimated_revenue_avg, estimated_revenue_low, estimated_revenue_high,
+                    estimated_eps_avg, estimated_eps_low, estimated_eps_high,
+                    estimated_ebit_avg, estimated_net_income_avg, forecast_dispersion,
+                    actual_eps, number_of_analysts_revenue, number_of_analysts_eps
+                FROM analyst_estimates
+                WHERE ticker = %s
+                ORDER BY date DESC
+                LIMIT %s
+            """, (ticker.upper(), limit))
+            columns = [desc[0] for desc in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    
+    # ==========================================
+    # Analyst Consensus
+    # ==========================================
+    
+    def add_analyst_consensus(self, data: Dict[str, Any]) -> bool:
+        """Add or update analyst consensus data (grades, price targets, summary)."""
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO analyst_consensus
+                (ticker, strong_buy, buy, hold, sell, strong_sell, consensus_rating,
+                 target_high, target_low, target_consensus, target_median,
+                 last_month_count, last_month_avg_price_target,
+                 last_quarter_count, last_quarter_avg_price_target,
+                 last_year_count, last_year_avg_price_target,
+                 all_time_count, all_time_avg_price_target, publishers, source, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (ticker)
+                DO UPDATE SET
+                    strong_buy = EXCLUDED.strong_buy,
+                    buy = EXCLUDED.buy,
+                    hold = EXCLUDED.hold,
+                    sell = EXCLUDED.sell,
+                    strong_sell = EXCLUDED.strong_sell,
+                    consensus_rating = EXCLUDED.consensus_rating,
+                    target_high = EXCLUDED.target_high,
+                    target_low = EXCLUDED.target_low,
+                    target_consensus = EXCLUDED.target_consensus,
+                    target_median = EXCLUDED.target_median,
+                    last_month_count = EXCLUDED.last_month_count,
+                    last_month_avg_price_target = EXCLUDED.last_month_avg_price_target,
+                    last_quarter_count = EXCLUDED.last_quarter_count,
+                    last_quarter_avg_price_target = EXCLUDED.last_quarter_avg_price_target,
+                    last_year_count = EXCLUDED.last_year_count,
+                    last_year_avg_price_target = EXCLUDED.last_year_avg_price_target,
+                    all_time_count = EXCLUDED.all_time_count,
+                    all_time_avg_price_target = EXCLUDED.all_time_avg_price_target,
+                    publishers = EXCLUDED.publishers,
+                    source = EXCLUDED.source,
+                    updated_at = CURRENT_TIMESTAMP
+            """, (
+                data.get("ticker", "").upper(),
+                data.get("strong_buy", 0),
+                data.get("buy", 0),
+                data.get("hold", 0),
+                data.get("sell", 0),
+                data.get("strong_sell", 0),
+                data.get("consensus_rating"),
+                data.get("target_high"),
+                data.get("target_low"),
+                data.get("target_consensus"),
+                data.get("target_median"),
+                data.get("last_month_count"),
+                data.get("last_month_avg_price_target"),
+                data.get("last_quarter_count"),
+                data.get("last_quarter_avg_price_target"),
+                data.get("last_year_count"),
+                data.get("last_year_avg_price_target"),
+                data.get("all_time_count"),
+                data.get("all_time_avg_price_target"),
+                data.get("publishers"),
+                data.get("source", "FMP")
+            ))
+            return cursor.rowcount > 0
+    
+    def get_analyst_consensus(self, ticker: str) -> Optional[Dict[str, Any]]:
+        """Get analyst consensus data for a ticker."""
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT 
+                    ticker, strong_buy, buy, hold, sell, strong_sell, consensus_rating,
+                    target_high, target_low, target_consensus, target_median,
+                    last_month_count, last_month_avg_price_target,
+                    last_quarter_count, last_quarter_avg_price_target,
+                    last_year_count, last_year_avg_price_target,
+                    all_time_count, all_time_avg_price_target, publishers,
+                    updated_at
+                FROM analyst_consensus
+                WHERE ticker = %s
+            """, (ticker.upper(),))
+            row = cursor.fetchone()
+            if row:
+                columns = [desc[0] for desc in cursor.description]
+                return dict(zip(columns, row))
+            return None
+    
+    def get_analyst_consensus_batch(self, tickers: List[str]) -> Dict[str, Dict[str, Any]]:
+        """Get analyst consensus data for multiple tickers."""
+        if not tickers:
+            return {}
+        
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            placeholders = ','.join(['%s'] * len(tickers))
+            cursor.execute(f"""
+                SELECT 
+                    ticker, strong_buy, buy, hold, sell, strong_sell, consensus_rating,
+                    target_high, target_low, target_consensus, target_median,
+                    last_month_count, last_month_avg_price_target,
+                    last_quarter_count, last_quarter_avg_price_target,
+                    last_year_count, last_year_avg_price_target,
+                    all_time_count, all_time_avg_price_target, publishers,
+                    updated_at
+                FROM analyst_consensus
+                WHERE ticker IN ({placeholders})
+            """, [t.upper() for t in tickers])
+            columns = [desc[0] for desc in cursor.description]
+            results = {}
+            for row in cursor.fetchall():
+                data = dict(zip(columns, row))
+                results[data['ticker']] = data
+            return results
     
     # ==========================================
     # Dividends
@@ -821,7 +1024,7 @@ class FinancialStatementsStore:
                 "income_statements", "balance_sheets", "cash_flow_statements",
                 "earnings_data", "insider_trades", "institutional_holdings",
                 "company_profiles", "esg_scores", "dcf_valuations",
-                "analyst_estimates", "dividends", "stock_splits"
+                "analyst_estimates", "analyst_consensus", "dividends", "stock_splits"
             ]
             
             for table in tables:

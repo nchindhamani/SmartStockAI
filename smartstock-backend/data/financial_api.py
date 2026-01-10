@@ -246,7 +246,7 @@ class FinancialDataFetcher:
                     continue
                 return None
         return None
-
+    
     def __init__(
         self,
         finnhub_key: Optional[str] = None,
@@ -755,8 +755,13 @@ class FinancialDataFetcher:
                     "analyst": item.get("analystCompany", "Unknown"),
                     "rating": item.get("newRecommendation", ""),
                     "price_target": item.get("priceTarget"),
+                    "adjusted_price_target": item.get("adjustedPriceTarget"),  # Accounts for splits/dividends
                     "date": item.get("date", ""),
-                    "action": item.get("action", "")
+                    "rating_date": item.get("date", ""),  # Alias for consistency
+                    "action": item.get("action", ""),
+                    "previous_rating": item.get("previousRecommendation"),  # For upgrade/downgrade tracking
+                    "news_publisher": item.get("newsPublisher") or item.get("analystCompany"),  # Publisher/firm name
+                    "period": item.get("period", "12M")  # Time horizon (e.g., '12M', '6M')
                 }
                 for item in data[:limit]
             ]
@@ -839,7 +844,7 @@ class FinancialDataFetcher:
                     operating_income=float(item.get("operatingIncome", 0) or 0),
                     net_income=float(item.get("netIncome", 0) or 0),
                     eps=float(item.get("eps", 0) or 0),
-                    eps_diluted=float(item.get("epsdiluted", 0) or 0),
+                    eps_diluted=float(item.get("epsDiluted", item.get("epsdiluted", 0)) or 0),  # Fixed: epsDiluted (camelCase)
                     cost_of_revenue=float(item.get("costOfRevenue", 0) or 0),
                     operating_expenses=float(item.get("operatingExpenses", 0) or 0),
                     interest_expense=float(item.get("interestExpense", 0) or 0),
@@ -932,13 +937,13 @@ class FinancialDataFetcher:
                     date=item.get("date", ""),
                     period=item.get("period", period_type[0].upper()),
                     operating_cash_flow=float(item.get("operatingCashFlow", 0) or 0),
-                    investing_cash_flow=float(item.get("netCashUsedForInvestingActivites", 0) or 0),
-                    financing_cash_flow=float(item.get("netCashUsedProvidedByFinancingActivities", 0) or 0),
+                    investing_cash_flow=float(item.get("netCashProvidedByInvestingActivities", 0) or 0),  # Fixed: netCashProvidedByInvestingActivities (negative = used)
+                    financing_cash_flow=float(item.get("netCashProvidedByFinancingActivities", 0) or 0),  # Fixed: already correct, negative = used
                     free_cash_flow=float(item.get("freeCashFlow", 0) or 0),
                     capital_expenditure=float(item.get("capitalExpenditure", 0) or 0),
-                    dividends_paid=float(item.get("dividendsPaid", 0) or 0),
+                    dividends_paid=float(item.get("commonDividendsPaid", item.get("netDividendsPaid", 0)) or 0),  # Fixed: commonDividendsPaid (negative = paid)
                     stock_repurchased=float(item.get("commonStockRepurchased", 0) or 0),
-                    debt_repayment=float(item.get("debtRepayment", 0) or 0)
+                    debt_repayment=float(item.get("netDebtIssuance", 0) or 0)  # Fixed: netDebtIssuance (negative = repayment)
                 ))
             return statements
         except Exception as e:
@@ -964,7 +969,7 @@ class FinancialDataFetcher:
             return CompanyProfile(
                 ticker=ticker.upper(),
                 name=item.get("companyName", ""),
-                exchange=item.get("exchangeShortName", ""),
+                exchange=item.get("exchange", item.get("exchangeShortName", "")),  # Fixed: use 'exchange' (not 'exchangeShortName')
                 sector=item.get("sector", ""),
                 industry=item.get("industry", ""),
                 description=item.get("description", ""),
@@ -973,10 +978,10 @@ class FinancialDataFetcher:
                 country=item.get("country", ""),
                 city=item.get("city", ""),
                 employees=int(item.get("fullTimeEmployees", 0) or 0),
-                market_cap=float(item.get("mktCap", 0) or 0),
+                market_cap=float(item.get("marketCap", 0) or 0),  # Fixed: marketCap (not mktCap)
                 beta=float(item.get("beta", 0) or 0),
                 price=float(item.get("price", 0) or 0),
-                avg_volume=int(item.get("volAvg", 0) or 0),
+                avg_volume=int(item.get("averageVolume", 0) or 0),  # Fixed: averageVolume (not volAvg)
                 ipo_date=item.get("ipoDate", ""),
                 is_actively_trading=item.get("isActivelyTrading", True)
             )
@@ -1032,21 +1037,39 @@ class FinancialDataFetcher:
             if not data or not isinstance(data, list):
                 return []
             
-            return [
-                {
+            estimates = []
+            for item in data:
+                revenue_avg = item.get("estimatedRevenueAvg")
+                revenue_low = item.get("estimatedRevenueLow")
+                revenue_high = item.get("estimatedRevenueHigh")
+                eps_avg = item.get("estimatedEpsAvg")
+                eps_low = item.get("estimatedEpsLow")
+                eps_high = item.get("estimatedEpsHigh")
+                
+                # Calculate forecast_dispersion: (High - Low) / Avg
+                # This measures analyst disagreement (high dispersion = low conviction)
+                forecast_dispersion = None
+                if eps_avg and eps_high is not None and eps_low is not None and eps_avg != 0:
+                    forecast_dispersion = (eps_high - eps_low) / abs(eps_avg)
+                
+                estimates.append({
                     "ticker": ticker.upper(),
                     "date": item.get("date", ""),
-                    "estimated_revenue_avg": item.get("estimatedRevenueAvg"),
-                    "estimated_revenue_low": item.get("estimatedRevenueLow"),
-                    "estimated_revenue_high": item.get("estimatedRevenueHigh"),
-                    "estimated_eps_avg": item.get("estimatedEpsAvg"),
-                    "estimated_eps_low": item.get("estimatedEpsLow"),
-                    "estimated_eps_high": item.get("estimatedEpsHigh"),
+                    "estimated_revenue_avg": revenue_avg,
+                    "estimated_revenue_low": revenue_low,
+                    "estimated_revenue_high": revenue_high,
+                    "estimated_eps_avg": eps_avg,
+                    "estimated_eps_low": eps_low,
+                    "estimated_eps_high": eps_high,
+                    "estimated_ebit_avg": item.get("estimatedEbitAvg"),  # Operational performance
+                    "estimated_net_income_avg": item.get("estimatedNetIncomeAvg"),  # For EPS sanity checks
                     "number_of_analysts_revenue": item.get("numberAnalystEstimatedRevenue"),
-                    "number_of_analysts_eps": item.get("numberAnalystsEstimatedEps")
-                }
-                for item in data
-            ]
+                    "number_of_analysts_eps": item.get("numberAnalystsEstimatedEps"),
+                    "forecast_dispersion": forecast_dispersion,  # Calculated: (High - Low) / Avg
+                    "actual_eps": item.get("actualEps")  # Once reported, for beat/miss tracking
+                })
+            
+            return estimates
         except Exception as e:
             print(f"[FMP] Analyst estimates error for {ticker}: {e}")
             return []

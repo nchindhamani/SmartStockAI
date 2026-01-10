@@ -116,8 +116,12 @@ class MetricsStore:
                     analyst VARCHAR(200),
                     rating VARCHAR(50),
                     price_target DOUBLE PRECISION,
+                    adjusted_price_target DOUBLE PRECISION,
                     rating_date DATE,
                     action VARCHAR(100),
+                    previous_rating VARCHAR(50),
+                    news_publisher VARCHAR(200),
+                    period VARCHAR(10),
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
@@ -306,10 +310,13 @@ class MetricsStore:
             
             # Prepare data tuples in exact column order: ticker, date, open, high, low, close, volume, change, change_percent, vwap, index_name
             # Note: FMP API returns 'symbol', but we store it as 'ticker'
+            # Note: FMP API returns camelCase (changePercent), map to snake_case (change_percent)
             values = []
             for item in data_list:
                 # Support both 'symbol' and 'ticker' keys for backward compatibility
                 ticker = item.get('ticker') or item.get('symbol', '')
+                # Map FMP camelCase fields to snake_case database columns
+                change_percent = item.get('change_percent') or item.get('changePercent')  # Support both formats
                 values.append((
                     ticker.upper(),
                     item.get('date'),
@@ -319,7 +326,7 @@ class MetricsStore:
                     item.get('close'),
                     item.get('volume'),
                     item.get('change'),
-                    item.get('change_percent'),
+                    change_percent,  # Fixed: Maps changePercent → change_percent
                     item.get('vwap'),
                     index_name
                 ))
@@ -470,28 +477,65 @@ class MetricsStore:
     def get_all_metrics_with_categories(
         self, 
         ticker: str,
-        categories: Optional[List[str]] = None
+        categories: Optional[List[str]] = None,
+        latest_only: bool = True
     ) -> Dict[str, List[Dict[str, Any]]]:
-        """Get all metrics grouped by category."""
+        """
+        Get all metrics grouped by category.
+        
+        Args:
+            ticker: Stock ticker symbol
+            categories: Optional list of categories to filter by
+            latest_only: If True, only return the most recent period for each metric
+        """
         with get_connection() as conn:
             cursor = conn.cursor()
             
-            query = """
-                SELECT 
-                    fm.*,
-                    mc.category,
-                    mc.description
-                FROM financial_metrics fm
-                JOIN metric_categories mc ON fm.metric_name = mc.metric_name
-                WHERE fm.ticker = %s
-            """
-            params = [ticker.upper()]
-            
-            if categories:
-                query += " AND mc.category = ANY(%s)"
-                params.append(categories)
-            
-            query += " ORDER BY mc.category, fm.period_end_date DESC"
+            if latest_only:
+                # Use a subquery to get only the latest period_end_date for each metric
+                # This is dynamic - always gets the most recent data available based on MAX(period_end_date)
+                # No hardcoding - works for any year (2025, 2026, etc.)
+                query = """
+                    SELECT 
+                        fm.*,
+                        mc.category,
+                        mc.description
+                    FROM financial_metrics fm
+                    JOIN metric_categories mc ON fm.metric_name = mc.metric_name
+                    INNER JOIN (
+                        SELECT metric_name, MAX(period_end_date) as max_date
+                        FROM financial_metrics
+                        WHERE ticker = %s
+                        GROUP BY metric_name
+                    ) latest ON fm.metric_name = latest.metric_name 
+                        AND fm.period_end_date = latest.max_date
+                    WHERE fm.ticker = %s
+                """
+                params = [ticker.upper(), ticker.upper()]
+                
+                if categories:
+                    query += " AND mc.category = ANY(%s)"
+                    params.append(categories)
+                
+                query += " ORDER BY mc.category, fm.metric_name"
+            else:
+                # Original query - returns all historical metrics
+                query = """
+                    SELECT 
+                        fm.*,
+                        mc.category,
+                        mc.description
+                    FROM financial_metrics fm
+                    JOIN metric_categories mc ON fm.metric_name = mc.metric_name
+                    WHERE fm.ticker = %s
+                """
+                params = [ticker.upper()]
+                
+                if categories:
+                    query += " AND mc.category = ANY(%s)"
+                    params.append(categories)
+                
+                query += " ORDER BY mc.category, fm.period_end_date DESC"
             
             cursor.execute(query, params)
             columns = [desc[0] for desc in cursor.description]
@@ -616,16 +660,22 @@ class MetricsStore:
         rating: str,
         rating_date: str,
         price_target: Optional[float] = None,
-        action: Optional[str] = None
+        action: Optional[str] = None,
+        adjusted_price_target: Optional[float] = None,
+        previous_rating: Optional[str] = None,
+        news_publisher: Optional[str] = None,
+        period: Optional[str] = None
     ) -> bool:
         """Add an analyst rating."""
         with get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO analyst_ratings
-                (ticker, analyst, rating, price_target, rating_date, action)
-                VALUES (%s, %s, %s, %s, %s, %s)
-            """, (ticker.upper(), analyst, rating, price_target, rating_date, action))
+                (ticker, analyst, rating, price_target, adjusted_price_target, 
+                 rating_date, action, previous_rating, news_publisher, period)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (ticker.upper(), analyst, rating, price_target, adjusted_price_target,
+                  rating_date, action, previous_rating, news_publisher, period))
             return cursor.rowcount > 0
     
     def get_recent_ratings(
