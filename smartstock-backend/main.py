@@ -4,8 +4,10 @@
 
 import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from dotenv import load_dotenv
@@ -19,6 +21,21 @@ from data.db_connection import init_connection_pool, close_connection_pool
 from data.news_store import get_news_store
 from jobs.news_archival import archive_old_news
 from jobs.price_archival import archive_old_prices, should_run_price_archival
+from utils.errors import (
+    SmartStockError,
+    AgentError,
+    NotFoundError,
+    ValidationError,
+    DatabaseError,
+    ErrorCode,
+    handle_exception
+)
+from utils.error_handler import (
+    smartstock_exception_handler,
+    validation_exception_handler,
+    http_exception_handler,
+    generic_exception_handler
+)
 
 # Load environment variables
 load_dotenv()
@@ -125,6 +142,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Register error handlers
+app.add_exception_handler(SmartStockError, smartstock_exception_handler)
+app.add_exception_handler(RequestValidationError, validation_exception_handler)
+app.add_exception_handler(StarletteHTTPException, http_exception_handler)
+app.add_exception_handler(Exception, generic_exception_handler)
+
 
 @app.get("/")
 async def root():
@@ -155,11 +178,18 @@ async def ask_smartstock(request: QueryRequest) -> AgentResponse:
     Returns:
         AgentResponse: Structured response with synthesis, metrics, and citations
     """
+    # Validate request
+    if not request.query or not request.query.strip():
+        raise ValidationError("Query cannot be empty", field="query")
+    
+    if not request.chat_id or not request.chat_id.strip():
+        raise ValidationError("Chat ID cannot be empty", field="chat_id")
+    
+    # Log the incoming query
+    print(f"[SmartStock AI] Received query: {request.query}")
+    print(f"[SmartStock AI] Chat ID: {request.chat_id}")
+    
     try:
-        # Log the incoming query
-        print(f"[SmartStock AI] Received query: {request.query}")
-        print(f"[SmartStock AI] Chat ID: {request.chat_id}")
-        
         # Run the LangGraph agent
         response = await run_agent(request.query, request.chat_id)
         
@@ -167,12 +197,15 @@ async def ask_smartstock(request: QueryRequest) -> AgentResponse:
         
         return AgentResponse(**response)
         
+    except SmartStockError:
+        # Re-raise SmartStock errors as-is
+        raise
     except Exception as e:
-        print(f"[SmartStock AI] Error: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Agent execution failed: {str(e)}"
-        )
+        # Convert generic exceptions to SmartStock errors
+        raise AgentError(
+            f"Agent execution failed: {str(e)}",
+            cause=e
+        ) from e
 
 
 @app.get("/api/health")
@@ -284,7 +317,10 @@ async def health_check():
             }
             
     except Exception as e:
+        # Log error but don't fail health check entirely
         db_status = "error"
+        error_handler = handle_exception(e, context="health_check")
+        error_handler.log("health_check")
         data_quality = {"error": str(e)}
     
     # Determine overall status
@@ -322,25 +358,39 @@ async def health_check():
 @app.get("/api/company/{ticker}")
 async def get_company_info(ticker: str):
     """Get company information and available metrics for a ticker."""
-    ticker_mapper = get_ticker_mapper()
-    metrics_store = get_metrics_store()
+    # Validate ticker
+    if not ticker or not ticker.strip():
+        raise ValidationError("Ticker cannot be empty", field="ticker")
     
-    company = ticker_mapper.get_company_info(ticker.upper())
-    if not company:
-        raise HTTPException(status_code=404, detail=f"Unknown ticker: {ticker}")
+    ticker = ticker.upper().strip()
     
-    company_db = metrics_store.get_company_info(ticker.upper())
-    metrics = metrics_store.get_all_metrics(ticker.upper())
-    
-    return {
-        "ticker": company.ticker,
-        "name": company.name,
-        "cik": company.cik,
-        "exchange": company.exchange,
-        "company_info": company_db,
-        "available_metrics": [m["metric_name"] for m in metrics],
-        "metrics": metrics
-    }
+    try:
+        ticker_mapper = get_ticker_mapper()
+        metrics_store = get_metrics_store()
+        
+        company = ticker_mapper.get_company_info(ticker)
+        if not company:
+            raise NotFoundError("Company", ticker)
+        
+        company_db = metrics_store.get_company_info(ticker)
+        metrics = metrics_store.get_all_metrics(ticker)
+        
+        return {
+            "ticker": company.ticker,
+            "name": company.name,
+            "cik": company.cik,
+            "exchange": company.exchange,
+            "company_info": company_db,
+            "available_metrics": [m["metric_name"] for m in metrics],
+            "metrics": metrics
+        }
+    except SmartStockError:
+        raise
+    except Exception as e:
+        raise DatabaseError(
+            f"Failed to fetch company info for {ticker}",
+            cause=e
+        ) from e
 
 
 @app.get("/api/compare")
@@ -352,17 +402,37 @@ async def compare_companies(tickers: str, metrics: str = "revenue_growth_yoy,gro
         tickers: Comma-separated ticker symbols (e.g., "AAPL,MSFT,GOOGL")
         metrics: Comma-separated metric names
     """
-    ticker_list = [t.strip().upper() for t in tickers.split(",")]
-    metric_list = [m.strip() for m in metrics.split(",")]
+    # Validate inputs
+    if not tickers or not tickers.strip():
+        raise ValidationError("Tickers parameter cannot be empty", field="tickers")
     
-    metrics_store = get_metrics_store()
-    comparison = metrics_store.compare_metrics(ticker_list, metric_list)
+    ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
+    if not ticker_list:
+        raise ValidationError("At least one ticker is required", field="tickers")
     
-    return {
-        "tickers": ticker_list,
-        "metrics_requested": metric_list,
-        "comparison": comparison
-    }
+    if len(ticker_list) > 10:
+        raise ValidationError("Maximum 10 tickers allowed per comparison", field="tickers")
+    
+    metric_list = [m.strip() for m in metrics.split(",") if m.strip()]
+    if not metric_list:
+        raise ValidationError("At least one metric is required", field="metrics")
+    
+    try:
+        metrics_store = get_metrics_store()
+        comparison = metrics_store.compare_metrics(ticker_list, metric_list)
+        
+        return {
+            "tickers": ticker_list,
+            "metrics_requested": metric_list,
+            "comparison": comparison
+        }
+    except SmartStockError:
+        raise
+    except Exception as e:
+        raise DatabaseError(
+            f"Failed to compare metrics for tickers: {', '.join(ticker_list)}",
+            cause=e
+        ) from e
 
 
 @app.post("/api/admin/archive-news")
@@ -384,12 +454,15 @@ async def manual_archive_news():
             "message": "News archival completed",
             "result": result
         }
+    except SmartStockError:
+        raise
     except Exception as e:
-        print(f"[News Archival] Error: {str(e)}")
-        raise HTTPException(
+        raise SmartStockError(
+            f"News archival failed: {str(e)}",
+            ErrorCode.DATA_INGESTION_ERROR,
             status_code=500,
-            detail=f"News archival failed: {str(e)}"
-        )
+            cause=e
+        ) from e
 
 
 @app.post("/api/admin/archive-prices")
@@ -407,19 +480,27 @@ async def manual_archive_prices():
         price_retention_years = int(os.getenv("PRICE_RETENTION_YEARS", "5"))
         archive_dir = os.getenv("PRICE_ARCHIVE_DIR", "./data/price_archive")
         
-        result = archive_old_prices(price_retention_years, archive_dir)
-        
-        return {
-            "status": "success",
-            "message": "Price archival completed",
-            "result": result
-        }
+        if should_run_price_archival():
+            result = archive_old_prices(price_retention_years, archive_dir)
+            return {
+                "status": "success",
+                "message": "Price archival completed",
+                "result": result
+            }
+        else:
+            return {
+                "status": "skipped",
+                "message": "Price archival skipped - data is still fresh (will start from 2028)"
+            }
+    except SmartStockError:
+        raise
     except Exception as e:
-        print(f"[Price Archival] Error: {str(e)}")
-        raise HTTPException(
+        raise SmartStockError(
+            f"Price archival failed: {str(e)}",
+            ErrorCode.DATA_INGESTION_ERROR,
             status_code=500,
-            detail=f"Price archival failed: {str(e)}"
-        )
+            cause=e
+        ) from e
 
 
 if __name__ == "__main__":
