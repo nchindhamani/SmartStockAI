@@ -142,3 +142,5 @@ psql $DATABASE_URL -c "SELECT * FROM fetch_logs ORDER BY created_at DESC LIMIT 1
 - ❌ **File logging**: Disabled by default (set `log_to_files=True` to enable)
 - ✅ **Terminal output**: Real-time when running in foreground
 
+
+
