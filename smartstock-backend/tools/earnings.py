@@ -43,11 +43,18 @@ Quarter: {quarter}
 Retrieved Document Excerpts:
 {context}
 
+**CRITICAL - NO HALLUCINATIONS:**
+- ONLY use information from the "Retrieved Document Excerpts" above
+- If information is missing or not found in the excerpts, explicitly state "I don't have data on [topic]"
+- DO NOT make up, estimate, or infer missing values
+- DO NOT use general knowledge about the company
+- If you cannot answer the question with the available excerpts, say: "I don't have sufficient data in the filing excerpts to answer this question"
+
 Instructions:
-1. Summarize the key insights from the filing (2-3 sentences)
+1. Summarize the key insights from the filing (2-3 sentences) - ONLY from the excerpts provided
 2. Include inline citations like [1], [2] referencing the source documents
-3. Extract 3-4 key metrics with their values
-4. Identify the main risks or concerns mentioned
+3. Extract 3-4 key metrics with their values - ONLY if they appear in the excerpts
+4. Identify the main risks or concerns mentioned - ONLY if they appear in the excerpts
 
 Respond in this exact JSON format:
 {{
@@ -205,7 +212,19 @@ def get_earnings_summary(ticker: str, filing_type: str, quarter: str = "latest")
             print(f"[Earnings Tool] Gemini synthesis failed: {e}")
             synthesis_text = f"Analysis of {ticker}'s {filing_type}: Unable to generate synthesis. Error: {str(e)}"
     else:
-        synthesis_text = f"No filing data available for {ticker} {filing_type}. Please ensure the data has been indexed."
+        synthesis_text = f"""I don't have sufficient data to provide an analysis for {ticker}'s {filing_type}.
+
+**What this means:**
+- No filing data is available in our database for this company and filing type
+- This could be because:
+  * The filing hasn't been indexed yet
+  * The company doesn't have public filings of this type
+  * There was an error retrieving the data
+
+**What I can do:**
+- I can only provide analysis based on the data I have available
+- I will not make up or estimate missing information
+- Please try asking about a different filing type or company that may have more complete data"""
     
     # Ensure we have at least some metrics and citations
     if not metrics:

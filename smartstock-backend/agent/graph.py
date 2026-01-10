@@ -59,13 +59,24 @@ SYNTHESIZER_SYSTEM_PROMPT = """You are the lead investment analyst for SmartStoc
 Your job is to take structured data and comparative context from our tools and create a sophisticated, 
 institutional-grade investment synthesis.
 
+**CRITICAL - NO HALLUCINATIONS:**
+- ONLY use the data provided by the tools
+- If the tool output indicates insufficient data or missing information, DO NOT make up values
+- If you cannot answer the question with available data, explicitly state: "I don't have sufficient data to answer this question"
+- DO NOT use general knowledge, estimates, or assumptions to fill in missing data
+- If data is missing for specific companies or metrics, clearly state what is missing
+
 Instructions:
-1. When multiple companies are involved, ALWAYS compare them directly.
-2. If the user asks "Is it a good time to buy?", provide a balanced perspective based on DCF valuation, growth, and risks.
-3. Use inline citations [1], [2] referencing sources.
-4. Keep it professional but clear. Do NOT say "This is not financial advice" (that is handled by the UI).
-5. Highlight which company looks stronger based on the data.
-6. Clean up numbers: round to 2 decimals, use '$' for currency, and add spaces between values and units.
+1. When multiple companies are involved, ALWAYS compare them directly and provide recommendations for EACH company.
+2. If the user asks for "best stocks" or "top stocks" or requests a specific number of stock recommendations, 
+   you MUST provide recommendations for ALL the stocks provided in the data (typically 2-5 stocks).
+3. If the user asks "Is it a good time to buy?", provide a balanced perspective based on DCF valuation, growth, and risks.
+4. Use inline citations [1], [2] referencing sources.
+5. Keep it professional but clear. Do NOT say "This is not financial advice" (that is handled by the UI).
+6. Highlight which company looks stronger based on the data.
+7. Clean up numbers: round to 2 decimals, use '$' for currency, and add spaces between values and units.
+8. When recommending multiple stocks, provide a clear ranking or comparison showing why each stock was selected.
+9. **If the tool result indicates insufficient_data=True or success=False due to missing data, acknowledge this clearly and explain what data is missing.**
 
 Tool output will be provided. Format your response naturally."""
 
@@ -149,9 +160,11 @@ def extract_tool_params_from_query(query: str, tool_name: str) -> dict:
     }
     
     # Known ticker symbols (expanded list)
+    # NOTE: Single-letter tickers like "C" are intentionally excluded here because they
+    # appear as substrings in many common words and cause false positives.
     known_tickers = ["AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "META", "NVDA", "TSLA", "AMD", "INTC", 
                      "NFLX", "CRM", "ORCL", "IBM", "CSCO", "QCOM", "TXN", "AVGO", "ADBE", "PYPL",
-                     "JPM", "BAC", "WFC", "C", "GS", "JNJ", "PG", "KO", "PEP", "WMT", "HD", "DIS"]
+                     "JPM", "BAC", "WFC", "GS", "JNJ", "PG", "KO", "PEP", "WMT", "HD", "DIS"]
     
     # Extract all mentioned tickers
     tickers = []
@@ -161,9 +174,10 @@ def extract_tool_params_from_query(query: str, tool_name: str) -> dict:
         if company in query_lower and ticker not in tickers:
             tickers.append(ticker)
     
-    # 2. Check known tickers
+    # 2. Check known tickers using whole-word matching to avoid substring false positives
     for t in known_tickers:
-        if t in query_upper and t not in tickers:
+        pattern = r'\b' + re.escape(t) + r'\b'
+        if re.search(pattern, query_upper) and t not in tickers:
             tickers.append(t)
             
     # 3. Pattern match for 2-5 letter uppercase words (ONLY if no tickers found yet)
@@ -318,9 +332,20 @@ def extract_tool_params_from_query(query: str, tool_name: str) -> dict:
     
     elif tool_name == "comparison":
         # Check if this is a "best stocks" query (e.g., "best S&P500 stocks", "top 2 stocks")
-        is_best_stocks_query = any(phrase in query_lower for phrase in [
-            "best", "top", "recommend", "suggest", "good to invest", "should i invest", "give me"
-        ])
+        # Use regex to match patterns like "what is the best stock", "give me X stocks", etc.
+        best_stocks_patterns = [
+            r"best\s+stock",
+            r"top\s+\d+\s+stocks?",
+            r"give\s+(?:me\s+)?\d+\s+stocks?",
+            r"recommend.*stock",
+            r"suggest.*stock",
+            r"what.*stock.*invest",
+            r"which.*stock.*buy",
+            r"stock.*invest.*now",
+            r"good\s+to\s+invest",
+            r"should\s+i\s+invest"
+        ]
+        is_best_stocks_query = any(re.search(pattern, query_lower) for pattern in best_stocks_patterns)
         
         # Detect index mentioned in query
         index_name = None
@@ -331,23 +356,39 @@ def extract_tool_params_from_query(query: str, tool_name: str) -> dict:
         elif "RUSSELL" in query_upper or "RUSSELL2000" in query_upper:
             index_name = "RUSSELL2000"
         
-        # Extract number of stocks requested (default to 2)
+        # If the user explicitly mentioned tickers (e.g., "Compare AAPL vs MSFT"),
+        # ALWAYS treat this as a direct comparison between those tickers.
+        # Do NOT treat it as a "best stocks" query even if wording matches patterns.
+        if tickers:
+            is_best_stocks_query = False
+            index_name = None
+        
+        # Extract number of stocks requested (default to 2) - only relevant for best-stocks queries
         num_stocks = 2
         num_match = re.search(r'\b(\d+)\s*(?:best|top|stocks?)\b', query_lower)
         if num_match:
             num_stocks = int(num_match.group(1))
         else:
             # Try alternative patterns
-            num_match = re.search(r'\b(?:best|top)\s*(\d+)\b', query_lower)
+            num_match = re.search(r'\b(?:best|top|give)\s*(\d+)\b', query_lower)
+            if num_match:
+                num_stocks = int(num_match.group(1))
+            # Also check for "give me X stocks" pattern
+            num_match = re.search(r'give\s+(?:me\s+)?(\d+)\s+stocks?', query_lower)
             if num_match:
                 num_stocks = int(num_match.group(1))
         
-        # If this is a "best stocks" query and we have an index, prioritize fetching from index
-        # Even if some tickers were incorrectly extracted, ignore them for "best stocks" queries
-        if is_best_stocks_query and index_name:
+        # If this is a "best stocks" query, use best_stocks_query logic
+        # Default to RUSSELL2000 if no index specified (has more stocks to choose from)
+        if is_best_stocks_query:
+            # If no index specified, default to RUSSELL2000 for broader selection
+            if not index_name:
+                index_name = "RUSSELL2000"
             # Pass special flag to comparison tool to fetch top stocks from index
+            # IMPORTANT: Clear any extracted tickers for "best stocks" queries to avoid confusion
             comparison_tickers = []  # Empty list signals to fetch from index
             best_stocks_flag = True
+            print(f"[Agent] Detected 'best stocks' query: fetching top {num_stocks} from {index_name}")
         else:
             # Return ALL detected tickers, or default to AAPL/MSFT if none
             comparison_tickers = tickers if tickers else ["AAPL", "MSFT"]

@@ -5,6 +5,7 @@
 import os
 import asyncio
 from typing import List, Optional
+from datetime import datetime
 from pydantic import BaseModel, Field
 from langchain_core.tools import tool
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -57,8 +58,8 @@ STRUCTURED DATA (from premium database):
 
 The data is organized by category:
 - INCOME_STATEMENT: Revenue growth, EBITDA growth, profit margins (profitability metrics)
-  * Revenue growth tells you if the company is getting bigger
-  * EBITDA growth tells you if the company is getting richer (more profitable)
+  * Revenue growth tells you if the company is "getting bigger" (top-line expansion)
+  * EBITDA growth tells you if the company is "getting richer" (more profitable)
 - BALANCE_SHEET: Asset growth, liability trends (financial health metrics)
 - CASH_FLOW: Operating cash flow, free cash flow (liquidity metrics)
 
@@ -66,19 +67,40 @@ QUALITATIVE CONTEXT (from SEC filings/earnings):
 {qualitative_context}
 
 Instructions:
-1. Provide a direct, side-by-side comparison of the companies.
-2. Address "Is it a good time to buy?" by looking at DCF upside and relative valuation (P/E).
-3. Be definitive but professional. Mention which stock shows better growth vs value characteristics.
-4. **Strategic Metric Usage:**
+1. **CRITICAL - NO HALLUCINATIONS**: 
+   - ONLY use the data provided in the "STRUCTURED DATA" section below
+   - If data is missing for a company or metric, explicitly state "I don't have data for [company/metric]"
+   - DO NOT make up, estimate, or infer missing values
+   - DO NOT use general knowledge or assumptions about companies
+   - If you cannot answer the question with the available data, say: "I don't have sufficient data to answer this question"
+2. **CRITICAL**: Only analyze the companies explicitly listed in the "Companies:" section above. Do NOT add, mention, or analyze any companies that were not requested by the user.
+3. **Data Freshness & Accuracy**:
+   - Always reference the period/date of the data you're using (e.g., "Q4 2025 (ending 2025-09-27)", "TTM (ending 2025-12-20)")
+   - If data has a "VERIFY" warning (⚠️), explicitly note this in your analysis and recommend checking official SEC filings
+   - Distinguish between quarterly growth (single quarter) and TTM growth (trailing twelve months) - they can tell different stories
+   - If the data seems outdated (>90 days old), note this limitation
+4. **Current Market Context (January 2026)**:
+   - Focus on **AI monetization** as the primary growth driver for tech companies:
+     * Microsoft (MSFT): Copilot monetization, Azure AI services, enterprise AI adoption
+     * Apple (AAPL): Apple Intelligence integration, AI-powered features in devices
+   - Modern risks: AI competition, regulatory changes in AI/data privacy, cloud infrastructure scaling
+   - Avoid outdated concerns: Supply chain disruptions (2022-2023 issue), component shortages (largely resolved)
+5. Provide a direct, side-by-side comparison of ONLY the requested companies.
+6. Address "Is it a good time to buy?" by looking at DCF upside and relative valuation (P/E).
+7. Be definitive but professional. Mention which stock shows better growth vs value characteristics.
+8. **Strategic Metric Usage:**
    - **Revenue growth**: Use to assess if the company is "getting bigger" (top-line expansion)
    - **EBITDA growth**: Use when analyzing profitability or "getting richer" - reference when:
      * The query explicitly asks about profitability, margins, or "getting richer"
      * You're comparing profitability between companies
      * Revenue growth is strong but you want to assess if profits are keeping pace
    - Use metrics where they add analytical value to the specific question being asked
-5. Include inline citations [1], [2] referencing the sources provided.
-6. If one stock is clearly superior in a certain metric, state it clearly.
-7. **IMPORTANT**: If any metric values seem unusually high or low (e.g., revenue growth > 50% for a mature company, negative growth when positive is expected), note this as a potential data quality issue and recommend verifying with official filings.
+9. Include inline citations [1], [2] referencing the sources provided.
+10. If one stock is clearly superior in a certain metric, state it clearly.
+11. **Data Quality Validation**:
+    - If any metric has a "VERIFY" warning (⚠️), explicitly state: "This value appears unusually high/low and should be verified against official SEC filings (10-Q/10-K)"
+    - For mature tech companies (AAPL, MSFT, GOOGL), revenue growth >15% TTM or >25% quarterly is unusual and warrants verification
+    - If quarterly and TTM growth show significant divergence, explain this discrepancy
 
 Respond with a sophisticated investment synthesis. Include citations."""
 
@@ -134,16 +156,27 @@ def get_top_stocks_from_index(index_name: str, num_stocks: int, metrics: List[st
         metrics_store = get_metrics_store()
         statements_store = get_financial_statements_store()
         
-        # Get all unique tickers from the index
+        # Get all unique tickers from the index using index_membership table
+        # This is faster than querying stock_prices.index_name and supports multiple indices per ticker
         with get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT DISTINCT ticker 
-                FROM stock_prices 
+                FROM index_membership 
                 WHERE index_name = %s
                 ORDER BY ticker
             """, (index_name,))
             all_tickers = [row[0] for row in cursor.fetchall()]
+            
+            # Fallback to stock_prices if index_membership is empty (backward compatibility)
+            if not all_tickers:
+                cursor.execute("""
+                    SELECT DISTINCT ticker 
+                    FROM stock_prices 
+                    WHERE index_name = %s
+                    ORDER BY ticker
+                """, (index_name,))
+                all_tickers = [row[0] for row in cursor.fetchall()]
         
         if not all_tickers:
             print(f"[Comparison Tool] No stocks found in index {index_name}")
@@ -232,6 +265,7 @@ def compare_financial_data(
     citation_id = 1
     
     for ticker in tickers[:3]:  # Limit to 3 tickers
+        print(f"[Comparison Tool] Processing ticker: {ticker}")
         structured_data[ticker] = {}
         
         # 1. Fetch from MetricsStore using category-aware methods - but validate and fetch fresh if needed
@@ -240,24 +274,54 @@ def compare_financial_data(
             relevant_categories = select_relevant_metrics_by_category(metrics)
             
             # Get metrics grouped by category for better organization
+            # Use latest_only=True to ensure we get the most recent data, not stale 2024 data
             metrics_by_category = metrics_store.get_all_metrics_with_categories(
                 ticker, 
-                categories=relevant_categories if relevant_categories else None
+                categories=relevant_categories if relevant_categories else None,
+                latest_only=True
             )
             
             has_suspicious_data = False
+            latest_period_date = None  # Track the most recent period_end_date
             
             # Process metrics by category for better organization
             for category, category_metrics in metrics_by_category.items():
                 for m in category_metrics:
                     metric_name = m["metric_name"]
                     metric_value = m["metric_value"]
+                    period_end_date = m.get("period_end_date")
                     
-                    # Data validation: Flag suspicious values
+                    # Track the latest period_end_date for staleness check
+                    if period_end_date:
+                        try:
+                            if isinstance(period_end_date, str):
+                                date_obj = datetime.strptime(period_end_date, "%Y-%m-%d").date()
+                            else:
+                                date_obj = period_end_date
+                            if latest_period_date is None or date_obj > latest_period_date:
+                                latest_period_date = date_obj
+                        except:
+                            pass
+                    
+                    # Data validation: Flag suspicious values based on company maturity
                     if "revenue_growth" in metric_name.lower():
-                        # Revenue growth > 50% for banks/financials is suspicious
-                        if abs(float(metric_value)) > 50:
-                            print(f"[Comparison Tool] WARNING: Suspicious revenue growth for {ticker}: {metric_value}%")
+                        growth_value = float(metric_value)
+                        # Mature megacap tech companies (AAPL, MSFT, GOOGL, etc.) typically have <15% revenue growth
+                        mature_tech_tickers = ["AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "META", "NVDA", "ORCL", "IBM", "CSCO"]
+                        is_mature_tech = ticker in mature_tech_tickers
+                        
+                        # Flag suspicious values:
+                        # - >50% for any company (likely data error)
+                        # - >25% for mature tech (unusual, verify)
+                        # - >15% for TTM in mature tech (verify against recent quarters)
+                        if abs(growth_value) > 50:
+                            print(f"[Comparison Tool] WARNING: Extremely suspicious revenue growth for {ticker}: {metric_value}% (likely data error)")
+                            has_suspicious_data = True
+                        elif is_mature_tech and abs(growth_value) > 25:
+                            print(f"[Comparison Tool] WARNING: Unusually high revenue growth for mature tech {ticker}: {metric_value}% (verify against SEC filings)")
+                            has_suspicious_data = True
+                        elif is_mature_tech and m.get("period") == "TTM" and abs(growth_value) > 15:
+                            print(f"[Comparison Tool] WARNING: High TTM revenue growth for mature tech {ticker}: {metric_value}% (verify against recent quarters)")
                             has_suspicious_data = True
                     
                     # Match requested metrics or strategically important ones
@@ -273,18 +337,40 @@ def compare_financial_data(
                     )
                     
                     if should_include:
+                        # Add data quality flag if suspicious
+                        data_quality_note = None
+                        if "revenue_growth" in metric_name.lower():
+                            growth_value = float(m["metric_value"])
+                            mature_tech_tickers = ["AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "META", "NVDA", "ORCL", "IBM", "CSCO"]
+                            if ticker in mature_tech_tickers:
+                                if abs(growth_value) > 25:
+                                    data_quality_note = "VERIFY: Unusually high for mature tech company"
+                                elif m.get("period") == "TTM" and abs(growth_value) > 15:
+                                    data_quality_note = "VERIFY: High TTM growth - check recent quarters"
+                        
                         structured_data[ticker][metric_name] = {
                             "value": m["metric_value"],
                             "unit": m["metric_unit"] or "",
                             "period": m["period"],
-                            "category": category  # Include category for context
+                            "period_end_date": period_end_date,  # Store for reference
+                            "category": category,  # Include category for context
+                            "data_quality_note": data_quality_note  # Flag suspicious values
                         }
             
-            # If suspicious data or missing key metrics, try fetching fresh from API
-            if has_suspicious_data or not any("revenue_growth" in k.lower() for k in structured_data[ticker].keys()):
+            # Check data freshness - if latest data is more than 90 days old, fetch fresh from API
+            data_is_stale = False
+            if latest_period_date:
+                days_old = (datetime.now().date() - latest_period_date).days
+                if days_old > 90:
+                    print(f"[Comparison Tool] Data for {ticker} is {days_old} days old (latest period: {latest_period_date}). Fetching fresh data from API...")
+                    data_is_stale = True
+            
+            # If suspicious data, missing key metrics, or data is stale, try fetching fresh from API
+            if has_suspicious_data or not any("revenue_growth" in k.lower() for k in structured_data[ticker].keys()) or data_is_stale:
                 print(f"[Comparison Tool] Fetching fresh metrics from API for {ticker}...")
                 try:
-                    fresh_metrics = await financial_fetcher.get_financial_metrics(ticker, quarters=4)
+                    import asyncio
+                    fresh_metrics = asyncio.run(financial_fetcher.get_key_metrics(ticker, quarters=4))
                     for fm in fresh_metrics:
                         metric_name = fm.metric_name
                         should_include = (
@@ -312,7 +398,7 @@ def compare_financial_data(
             print(f"[Comparison Tool] MetricsStore error for {ticker}: {e}")
             # Try fetching fresh from API as fallback
             try:
-                fresh_metrics = await financial_fetcher.get_financial_metrics(ticker, quarters=4)
+                fresh_metrics = asyncio.run(financial_fetcher.get_key_metrics(ticker, quarters=4))
                 for fm in fresh_metrics:
                     metric_name = fm.metric_name
                     should_include = (
@@ -337,7 +423,7 @@ def compare_financial_data(
         # 2. Fetch current price (always get fresh from API or latest from stock_prices)
         try:
             # Try to get fresh quote from API
-            quote = await financial_fetcher.get_quote(ticker)
+            quote = asyncio.run(financial_fetcher.get_quote(ticker))
             if quote and quote.get("price"):
                 structured_data[ticker]["current_price"] = {
                     "value": float(quote["price"]),
@@ -396,11 +482,16 @@ def compare_financial_data(
                 if unit == "x": formatted_val = f"{val:,.2f}x"
                 if unit == "%": formatted_val = f"{val:+.2f}%"
                 
+                metric_key = f"{ticker} {key.replace('_', ' ').title()}"
                 result_metrics.append(Metric(
-                    key=f"{ticker} {key.replace('_', ' ').title()}",
+                    key=metric_key,
                     value=formatted_val,
                     color_context="green" if (key == "dcf_upside" and val > 0) or (key == "revenue_growth" and val > 0) else "red" if val < 0 else "blue"
                 ))
+                print(f"[Comparison Tool] Added metric: {metric_key} = {formatted_val}")
+        
+        print(f"[Comparison Tool] Total metrics for {ticker}: {len([k for k in structured_data[ticker].keys()])}")
+        print(f"[Comparison Tool] Total result_metrics so far: {len(result_metrics)}")
         
         # Add citation for this ticker's data
         citations.append(Citation(
@@ -416,9 +507,16 @@ def compare_financial_data(
     
     for ticker in tickers[:2]:
         try:
-            # Search for competitive strategy and risks
+            # Search for competitive strategy, AI initiatives, and current risks
+            # Prioritize AI-related content for tech companies (January 2026 context)
+            tech_tickers = ["AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "META", "NVDA", "ORCL", "IBM", "CSCO", "AMD", "INTC"]
+            if ticker in tech_tickers:
+                query = f"{ticker} AI artificial intelligence Copilot Apple Intelligence competitive strategy risks investment buy case monetization"
+            else:
+                query = f"{ticker} competitive advantage strategy risks investment buy case"
+            
             results = vector_store.search_by_ticker(
-                query=f"{ticker} competitive advantage strategy risks investment buy case",
+                query=query,
                 ticker=ticker,
                 n_results=2
             )
@@ -435,6 +533,71 @@ def compare_financial_data(
         except Exception as e:
             print(f"[Comparison Tool] Vector search error for {ticker}: {e}")
     
+    # DATA VALIDATION: Check if we have sufficient data to answer the query
+    insufficient_data = False
+    missing_data_details = []
+    
+    for ticker in tickers:
+        ticker_metrics = structured_data.get(ticker, {})
+        
+        # Check if we have any data at all for this ticker
+        if not ticker_metrics:
+            insufficient_data = True
+            missing_data_details.append(f"{ticker}: No financial data available")
+            continue
+        
+        # Check if we have critical metrics for comparison queries
+        has_critical_metrics = any(
+            key in ticker_metrics for key in ["revenue_growth", "dcf_upside", "pe_ratio", "current_price"]
+        )
+        
+        if not has_critical_metrics:
+            insufficient_data = True
+            missing_data_details.append(f"{ticker}: Missing critical metrics (revenue_growth, dcf_upside, pe_ratio, or current_price)")
+        
+        # Check if requested metrics are available
+        if metrics:
+            missing_requested = []
+            for req_metric in metrics:
+                # Check if any metric name contains the requested metric
+                found = any(req_metric.lower() in key.lower() for key in ticker_metrics.keys())
+                if not found:
+                    missing_requested.append(req_metric)
+            
+            if missing_requested:
+                missing_data_details.append(f"{ticker}: Missing requested metrics: {', '.join(missing_requested)}")
+    
+    # If insufficient data, return early with clear message
+    if insufficient_data:
+        missing_summary = "\n".join(missing_data_details)
+        synthesis_text = f"""I don't have sufficient data to provide a comprehensive analysis for your query.
+
+**Missing Data:**
+{missing_summary}
+
+**What this means:**
+- The requested financial metrics are not available in our database for one or more of the companies you asked about.
+- This could be because:
+  * The data hasn't been ingested yet
+  * The company doesn't have public financial statements
+  * There was an error fetching the data from our data providers
+
+**What I can do:**
+- I can only provide analysis based on the data I have available
+- I will not make up or estimate missing values
+- Please try asking about different metrics or companies that may have more complete data
+
+If you'd like, I can check what data IS available for these companies and provide a limited analysis based on that."""
+        
+        return ToolResult(
+            tool_name="compare_financial_data",
+            success=False,
+            synthesis_text=synthesis_text,
+            metrics=result_metrics[:12],
+            citations=citations[:8],
+            raw_data={"tickers": tickers, "insufficient_data": True, "missing_details": missing_data_details}
+        )
+    
     # SYNTHESIS
     synthesis_text = ""
     try:
@@ -444,12 +607,24 @@ def compare_financial_data(
             temperature=0.2
         )
         
-        # Format structured data for prompt
+        # Format structured data for prompt with period/date information
         structured_str = ""
         for ticker, ticker_metrics in structured_data.items():
             structured_str += f"\n{ticker}:\n"
             for name, data in ticker_metrics.items():
-                structured_str += f"  - {name}: {data['value']}{data['unit']} ({data['period']})\n"
+                period_info = data.get('period', 'N/A')
+                period_end_date = data.get('period_end_date', '')
+                # Include period_end_date if available for better context
+                if period_end_date:
+                    period_display = f"{period_info} (ending {period_end_date})"
+                else:
+                    period_display = f"{period_info}" if period_info else "latest"
+                
+                # Add data quality warning if present
+                quality_note = data.get('data_quality_note', '')
+                quality_warning = f" ⚠️ {quality_note}" if quality_note else ""
+                
+                structured_str += f"  - {name}: {data['value']}{data['unit']} (Period: {period_display}){quality_warning}\n"
         
         prompt = COMPARISON_PROMPT.format(
             tickers=", ".join(tickers),
