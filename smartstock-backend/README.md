@@ -2,23 +2,35 @@
 
 Agentic RAG API for Financial Analysis powered by FastAPI, LangChain, and LangGraph.
 
-## Quick Start with uv
+## Quick Start
 
+See **[QUICK_START.md](QUICK_START.md)** for detailed setup instructions.
+
+**Quick Setup:**
 ```bash
 # Install dependencies
-uv sync
+uv sync --all-extras
+
+# Configure environment variables
+cp .env.example .env  # Edit with your API keys
 
 # Run the development server
-uv run python main.py
-
-# Or use uvicorn directly
 uv run uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+**Health Check:**
+```bash
+curl http://localhost:8000/api/health
 ```
 
 ## API Endpoints
 
-- `GET /` - Health check
-- `POST /api/ask` - Submit a financial query
+- `GET /api/health` - Enhanced health check with data quality metrics
+- `POST /api/ask` - Submit a financial query to the agent
+- `GET /api/company/{ticker}` - Get company information and metrics
+- `GET /api/compare` - Compare financial metrics across companies
+
+See [QUICK_START.md](QUICK_START.md) for detailed API usage and examples.
 
 ## Project Structure
 

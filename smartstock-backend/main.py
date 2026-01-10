@@ -178,14 +178,129 @@ async def ask_smartstock(request: QueryRequest) -> AgentResponse:
 @app.get("/api/health")
 async def health_check():
     """Detailed health check with agent and data layer status."""
+    from data.db_connection import get_connection
+    from datetime import datetime, timedelta
+    
     metrics_store = get_metrics_store()
     ticker_mapper = get_ticker_mapper()
     
+    # Check database connectivity
+    db_status = "operational"
+    data_quality = {}
+    
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Data freshness checks - company_profiles doesn't have 'date', use updated_at
+            cursor.execute("""
+                SELECT 
+                    MAX(updated_at) as last_profile_update,
+                    COUNT(*) FILTER (WHERE market_cap > 0) as profiles_with_market_cap,
+                    COUNT(*) FILTER (WHERE exchange IS NOT NULL AND exchange != '') as profiles_with_exchange,
+                    COUNT(*) as total_profiles
+                FROM company_profiles
+            """)
+            profile_stats = cursor.fetchone()
+            
+            # Get last price date separately
+            cursor.execute("SELECT MAX(date) as last_price_date FROM stock_prices")
+            last_price_result = cursor.fetchone()
+            last_price_date = last_price_result[0] if last_price_result else None
+            
+            # Data completeness checks for stock prices (last 7 days)
+            cursor.execute("""
+                SELECT 
+                    COUNT(*) FILTER (WHERE change_percent IS NOT NULL) as prices_with_change,
+                    COUNT(*) as total_prices,
+                    MAX(date) as latest_date
+                FROM stock_prices
+                WHERE date >= CURRENT_DATE - INTERVAL '7 days'
+            """)
+            price_stats = cursor.fetchone()
+            
+            # Analyst data coverage
+            cursor.execute("SELECT COUNT(*) FROM analyst_consensus")
+            consensus_count = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT COUNT(DISTINCT ticker) FROM analyst_ratings")
+            ratings_tickers = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT COUNT(DISTINCT ticker) FROM analyst_estimates")
+            estimates_tickers = cursor.fetchone()[0]
+            
+            # Financial statements data quality (check for zero values indicating potential issues)
+            cursor.execute("""
+                SELECT 
+                    COUNT(*) FILTER (WHERE investing_cash_flow != 0 OR financing_cash_flow != 0) as cf_with_data,
+                    COUNT(*) as total_cf
+                FROM cash_flow_statements
+                WHERE date >= CURRENT_DATE - INTERVAL '1 year'
+            """)
+            cf_stats = cursor.fetchone()
+            
+            cursor.execute("""
+                SELECT 
+                    COUNT(*) FILTER (WHERE eps_diluted != 0) as is_with_eps,
+                    COUNT(*) as total_is
+                FROM income_statements
+                WHERE date >= CURRENT_DATE - INTERVAL '1 year'
+            """)
+            is_stats = cursor.fetchone()
+            
+            # Build data quality report
+            total_profiles = profile_stats[3] or 0
+            profiles_with_market_cap = profile_stats[1] or 0
+            profiles_with_exchange = profile_stats[2] or 0
+            
+            data_quality = {
+                "company_profiles": {
+                    "total": total_profiles,
+                    "with_market_cap": profiles_with_market_cap,
+                    "with_exchange": profiles_with_exchange,
+                    "market_cap_completeness": f"{(profiles_with_market_cap/total_profiles*100):.1f}%" if total_profiles > 0 else "0%",
+                    "exchange_completeness": f"{(profiles_with_exchange/total_profiles*100):.1f}%" if total_profiles > 0 else "0%",
+                    "last_update": str(profile_stats[0]) if profile_stats[0] else None,
+                    "status": "good" if profiles_with_market_cap/total_profiles > 0.9 else "warning" if profiles_with_market_cap/total_profiles > 0.5 else "critical"
+                },
+                "stock_prices": {
+                    "recent_total": price_stats[1] or 0,
+                    "with_change_percent": price_stats[0] or 0,
+                    "completeness": f"{(price_stats[0]/price_stats[1]*100):.1f}%" if price_stats[1] and price_stats[1] > 0 else "0%",
+                    "latest_date": str(last_price_date) if last_price_date else None,
+                    "status": "good" if (price_stats[0] or 0) > 0 else "warning"
+                },
+                "analyst_data": {
+                    "consensus_records": consensus_count or 0,
+                    "tickers_with_ratings": ratings_tickers or 0,
+                    "tickers_with_estimates": estimates_tickers or 0,
+                    "status": "good" if consensus_count > 0 else "warning"
+                },
+                "financial_statements": {
+                    "cash_flow_with_data": f"{(cf_stats[0]/cf_stats[1]*100):.1f}%" if cf_stats[1] and cf_stats[1] > 0 else "0%",
+                    "income_statements_with_eps": f"{(is_stats[0]/is_stats[1]*100):.1f}%" if is_stats[1] and is_stats[1] > 0 else "0%",
+                    "status": "warning"  # Historical data may have field mapping issues
+                }
+            }
+            
+    except Exception as e:
+        db_status = "error"
+        data_quality = {"error": str(e)}
+    
+    # Determine overall status
+    overall_status = "healthy"
+    if db_status == "error":
+        overall_status = "unhealthy"
+    elif data_quality.get("company_profiles", {}).get("status") == "critical":
+        overall_status = "degraded"
+    
     return {
-        "status": "healthy",
+        "status": overall_status,
+        "timestamp": datetime.now().isoformat(),
         "components": {
             "api": "operational",
             "agent": "operational",
+            "database": db_status,
             "memory": "operational",
             "vector_store": "operational",
             "metrics_store": "operational",
@@ -199,7 +314,8 @@ async def health_check():
         "data_layer": {
             "metrics_store": metrics_store.get_stats(),
             "ticker_mapper": ticker_mapper.get_stats()
-        }
+        },
+        "data_quality": data_quality
     }
 
 
