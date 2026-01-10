@@ -7,7 +7,7 @@ Fetches earnings calendar data from FMP API and calculates earnings surprises
 which provides epsActual, epsEstimated, revenueActual, revenueEstimated.
 
 Usage:
-    uv run python scripts/ingest_earnings_surprises.py [--ticker-list AAPL,TSLA,GOOGL] [--limit 1000]
+    uv run python scripts/ingest_earnings_surprises.py [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD] [--limit 1000]
 """
 
 import sys
@@ -68,7 +68,7 @@ async def fetch_earnings_calendar(
     if not end_date:
         end_date = datetime.now().strftime("%Y-%m-%d")
     
-    url = f"{BASE_URL}/stable/earnings-calendar"
+    url = f"{BASE_URL}/earnings-calendar"
     params = {
         "from": start_date,
         "to": end_date,
