@@ -1,0 +1,120 @@
+name: Monthly Company Data Sync
+
+on:
+  schedule:
+    # Run monthly on the 1st of each month at 8:00 UTC (4:00 AM EST / 5:00 AM EDT)
+    - cron: '0 8 1 * *'
+  workflow_dispatch:  # Allow manual triggering
+
+jobs:
+  monthly-company-sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6 hours max (GitHub Actions limit)
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+      
+      - name: Install dependencies
+        working-directory: smartstock-backend
+        run: |
+          uv sync --all-extras
+          # Verify dependencies
+          uv run python -c "import psycopg2, aiohttp; print('Dependencies OK')"
+      
+      - name: Task 1 - Ingest Company Profiles & Key Metrics
+        working-directory: smartstock-backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
+        run: |
+          echo "=========================================="
+          echo "TASK 1: Company Profiles & Key Metrics"
+          echo "=========================================="
+          # Ingest for all tickers (no ticker list = all tickers in stock_prices)
+          # This will update market_cap, exchange, sector, industry, key metrics
+          uv run python scripts/ingest_company_profiles.py || echo "⚠️  Task 1 failed but continuing..."
+          echo ""
+        continue-on-error: true
+      
+      - name: Task 2 - Ingest Financial Growth Metrics
+        working-directory: smartstock-backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
+        run: |
+          echo "=========================================="
+          echo "TASK 2: Financial Growth Metrics"
+          echo "=========================================="
+          # Ingest growth metrics for all tickers
+          uv run python scripts/ingest_financial_growth_metrics.py || echo "⚠️  Task 2 failed but continuing..."
+          echo ""
+        continue-on-error: true
+      
+      - name: Check ingestion status
+        working-directory: smartstock-backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          echo "=========================================="
+          echo "INGESTION STATUS SUMMARY"
+          echo "=========================================="
+          uv run python -c "
+          from data.db_connection import get_connection
+          with get_connection() as conn:
+              cursor = conn.cursor()
+              
+              # Check company profiles data quality
+              cursor.execute('''
+                  SELECT 
+                      COUNT(*) as total,
+                      COUNT(*) FILTER (WHERE market_cap > 0) as with_market_cap,
+                      COUNT(*) FILTER (WHERE exchange IS NOT NULL AND exchange != '''') as with_exchange,
+                      MAX(updated_at) as last_update
+                  FROM company_profiles
+              ''')
+              profile_stats = cursor.fetchone()
+              
+              # Check growth metrics
+              cursor.execute('SELECT COUNT(*) FROM financial_metrics WHERE metric_name LIKE ''%growth%''')
+              growth_metrics = cursor.fetchone()[0]
+              
+              print(f'Company Profiles: {profile_stats[0]:,} total')
+              print(f'  With market_cap: {profile_stats[1]:,}')
+              print(f'  With exchange: {profile_stats[2]:,}')
+              print(f'  Last update: {profile_stats[3]}')
+              print(f'Growth Metrics: {growth_metrics:,} records')
+          " || echo "⚠️  Could not check status"
+          echo ""
+      
+      - name: Upload logs (if failed)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: monthly-sync-logs
+          path: |
+            smartstock-backend/data/logs/*.log
+          retention-days: 7
+      
+      - name: Generate summary
+        working-directory: smartstock-backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          echo "=========================================="
+          echo "MONTHLY COMPANY SYNC COMPLETE"
+          echo "=========================================="
+          echo "Check sync_logs table for detailed status:"
+          echo "  SELECT * FROM sync_logs WHERE task_name IN ('ingest_company_profiles', 'ingest_financial_growth_metrics') ORDER BY completed_at DESC LIMIT 10;"
+          echo ""
+

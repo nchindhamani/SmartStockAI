@@ -1,0 +1,134 @@
+name: Weekly Financial Data Sync
+
+on:
+  schedule:
+    # Run weekly on Sundays at 6:00 UTC (2:00 AM EST / 3:00 AM EDT)
+    # After markets close, before Monday trading
+    - cron: '0 6 * * 0'
+  workflow_dispatch:  # Allow manual triggering
+
+jobs:
+  weekly-financial-sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6 hours max (GitHub Actions limit)
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+      
+      - name: Install dependencies
+        working-directory: smartstock-backend
+        run: |
+          uv sync --all-extras
+          # Verify dependencies
+          uv run python -c "import psycopg2, aiohttp; print('Dependencies OK')"
+      
+      - name: Task 1 - Ingest Financial Statements
+        working-directory: smartstock-backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
+        run: |
+          echo "=========================================="
+          echo "TASK 1: Financial Statements Ingestion"
+          echo "=========================================="
+          uv run python scripts/ingest_financial_statements.py || echo "⚠️  Task 1 failed but continuing..."
+          echo ""
+        continue-on-error: true
+      
+      - name: Task 2 - Ingest Earnings Surprises
+        working-directory: smartstock-backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
+        run: |
+          echo "=========================================="
+          echo "TASK 2: Earnings Surprises Ingestion"
+          echo "=========================================="
+          # Fetch last 1 year of earnings data, limit 2000 records
+          # Only fetches records with actual data (reported earnings)
+          uv run python scripts/ingest_earnings_surprises.py \
+            --start-date $(date -d '1 year ago' -u +%Y-%m-%d) \
+            --end-date $(date -u +%Y-%m-%d) \
+            --limit 2000 || echo "⚠️  Task 2 failed but continuing..."
+          echo ""
+        continue-on-error: true
+      
+      - name: Task 3 - Ingest Analyst Data
+        working-directory: smartstock-backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
+        run: |
+          echo "=========================================="
+          echo "TASK 3: Analyst Data Ingestion"
+          echo "=========================================="
+          # Ingest for all tickers (no ticker list = all tickers)
+          uv run python scripts/ingest_analyst_data.py || echo "⚠️  Task 3 failed but continuing..."
+          echo ""
+        continue-on-error: true
+      
+      - name: Check ingestion status
+        working-directory: smartstock-backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          echo "=========================================="
+          echo "INGESTION STATUS SUMMARY"
+          echo "=========================================="
+          uv run python -c "
+          from data.db_connection import get_connection
+          with get_connection() as conn:
+              cursor = conn.cursor()
+              
+              # Check recent data counts
+              cursor.execute('SELECT COUNT(*) FROM income_statements WHERE date >= CURRENT_DATE - INTERVAL ''30 days''')
+              recent_is = cursor.fetchone()[0]
+              
+              cursor.execute('SELECT COUNT(*) FROM earnings_data WHERE date >= CURRENT_DATE - INTERVAL ''30 days''')
+              recent_earnings = cursor.fetchone()[0]
+              
+              cursor.execute('SELECT COUNT(*) FROM analyst_consensus')
+              consensus_count = cursor.fetchone()[0]
+              
+              cursor.execute('SELECT COUNT(*) FROM analyst_ratings WHERE rating_date >= CURRENT_DATE - INTERVAL ''30 days''')
+              recent_ratings = cursor.fetchone()[0]
+              
+              print(f'Recent Income Statements (30 days): {recent_is:,}')
+              print(f'Recent Earnings Surprises (30 days): {recent_earnings:,}')
+              print(f'Total Analyst Consensus: {consensus_count:,}')
+              print(f'Recent Analyst Ratings (30 days): {recent_ratings:,}')
+          " || echo "⚠️  Could not check status"
+          echo ""
+      
+      - name: Upload logs (if failed)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-sync-logs
+          path: |
+            smartstock-backend/data/logs/*.log
+          retention-days: 7
+      
+      - name: Generate summary
+        working-directory: smartstock-backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          echo "=========================================="
+          echo "WEEKLY FINANCIAL SYNC COMPLETE"
+          echo "=========================================="
+          echo "Check sync_logs table for detailed status:"
+          echo "  SELECT * FROM sync_logs WHERE task_name IN ('ingest_financial_statements', 'ingest_earnings_surprises', 'ingest_analyst_data') ORDER BY completed_at DESC LIMIT 10;"
+          echo ""
+

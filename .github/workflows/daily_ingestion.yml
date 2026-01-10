@@ -12,6 +12,7 @@ on:
 jobs:
   daily-sync:
     runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6 hours max (GitHub Actions limit)
     
     steps:
       - name: Checkout code
@@ -45,6 +46,7 @@ jobs:
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
         run: |
           uv run python scripts/daily_sync.py
+        continue-on-error: true  # Continue even if one task fails
       
       - name: Check sync status
         working-directory: smartstock-backend
