@@ -55,10 +55,11 @@ jobs:
           echo "=========================================="
           echo "TASK 2: Earnings Surprises Ingestion"
           echo "=========================================="
-          # Fetch last 1 year of earnings data, limit 2000 records
+          # Fetch earnings data (from 2025-01-15 to today, max 1 year range)
+          # Note: FMP subscription limitation - from date must be 2025-01-15 or later
           # Only fetches records with actual data (reported earnings)
           uv run python scripts/ingest_earnings_surprises.py \
-            --start-date $(date -d '1 year ago' -u +%Y-%m-%d) \
+            --start-date 2025-01-15 \
             --end-date $(date -u +%Y-%m-%d) \
             --limit 2000 || echo "⚠️  Task 2 failed but continuing..."
           echo ""

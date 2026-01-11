@@ -6,8 +6,19 @@ Fetches earnings calendar data from FMP API and calculates earnings surprises
 (actual vs estimated EPS and revenue). Uses /stable/earnings-calendar endpoint
 which provides epsActual, epsEstimated, revenueActual, revenueEstimated.
 
+Subscription Limitation:
+- from date must be 2025-01-15 or later (earliest allowed date)
+- Maximum date range: 1 year from start date
+
 Usage:
     uv run python scripts/ingest_earnings_surprises.py [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD] [--limit 1000]
+    
+Examples:
+    # Default: last 1 year from 2025-01-15 to today
+    uv run python scripts/ingest_earnings_surprises.py
+    
+    # Custom date range (from must be >= 2025-01-15)
+    uv run python scripts/ingest_earnings_surprises.py --start-date 2025-01-15 --end-date 2026-01-15
 """
 
 import sys
@@ -32,7 +43,7 @@ FMP_API_KEY = os.getenv("FMP_API_KEY")
 if not FMP_API_KEY:
     raise ValueError("FMP_API_KEY not found in environment variables")
 
-BASE_URL = "https://financialmodelingprep.com/stable"
+BASE_URL = "https://financialmodelingprep.com/api/stable"
 SEMAPHORE_LIMIT = 3  # Moderate concurrency to avoid rate limits
 REQUEST_DELAY = 0.5  # 500ms delay between requests
 CHUNK_SIZE = 100  # Process 100 records at a time
@@ -62,9 +73,20 @@ async def fetch_earnings_calendar(
         async with semaphore:
             await asyncio.sleep(REQUEST_DELAY)
     
-    # Default to last 1 year of data
+    # Default date range: from 2025-01-15 (earliest allowed) to today
+    # Note: FMP subscription limitation - from date must be 2025-01-15 or later
     if not start_date:
-        start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+        # Use 2025-01-15 as minimum (subscription limitation)
+        min_date = datetime(2025, 1, 15)
+        one_year_ago = datetime.now() - timedelta(days=365)
+        start_date = max(min_date, one_year_ago).strftime("%Y-%m-%d")
+    else:
+        # Ensure start_date is not before 2025-01-15
+        start_date_obj = datetime.strptime(start_date, "%Y-%m-%d")
+        min_date = datetime(2025, 1, 15)
+        if start_date_obj < min_date:
+            start_date = min_date.strftime("%Y-%m-%d")
+    
     if not end_date:
         end_date = datetime.now().strftime("%Y-%m-%d")
     
