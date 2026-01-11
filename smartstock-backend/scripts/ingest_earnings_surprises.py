@@ -296,8 +296,21 @@ async def ingest_earnings_surprises(
     print("=" * 80)
     print()
     
+    # Default date range: from 2025-01-15 (earliest allowed) to today
+    # Note: FMP subscription limitation - from date must be 2025-01-15 or later
     if not start_date:
-        start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+        # Use 2025-01-15 as minimum (subscription limitation)
+        min_date = datetime(2025, 1, 15)
+        one_year_ago = datetime.now() - timedelta(days=365)
+        start_date = max(min_date, one_year_ago).strftime("%Y-%m-%d")
+    else:
+        # Ensure start_date is not before 2025-01-15
+        start_date_obj = datetime.strptime(start_date, "%Y-%m-%d")
+        min_date = datetime(2025, 1, 15)
+        if start_date_obj < min_date:
+            start_date = min_date.strftime("%Y-%m-%d")
+            print(f"⚠️  Start date adjusted to minimum allowed: {start_date}")
+    
     if not end_date:
         end_date = datetime.now().strftime("%Y-%m-%d")
     
