@@ -119,7 +119,7 @@ The script automatically calculates:
 
 ### What We Store
 
-The `earnings_data` table stores:
+The `earnings_surprises` table stores:
 - `ticker` (from symbol)
 - `date` (from date)
 - `eps_actual` (from epsActual)

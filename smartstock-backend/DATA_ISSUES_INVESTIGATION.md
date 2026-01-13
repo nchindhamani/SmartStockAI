@@ -254,9 +254,9 @@ The raw FMP response is passed directly without field name transformation.
 **Status:** ❌ **NOT IMPLEMENTED**
 
 **Finding:**
-- `earnings_data` table exists (created in `financial_statements_store.py`)
-- 0 records in the table
-- No ingestion script for earnings surprises
+- `earnings_surprises` table exists (created in `financial_statements_store.py`)
+- 0 records in the table (at time of investigation)
+- No ingestion script for earnings surprises (now created: `scripts/ingest_earnings_surprises.py`)
 
 **Root Cause:**
 - Table schema was created but no ingestion script was implemented
