@@ -85,7 +85,7 @@ def main():
     # Insert test records
     if test_records:
         print("=" * 100)
-        print("INSERTING TEST DATA INTO earnings_data TABLE")
+        print("INSERTING TEST DATA INTO earnings_surprises TABLE")
         print("=" * 100)
         print()
         
@@ -94,7 +94,7 @@ def main():
         
         for record in test_records:
             try:
-                if store.add_earnings_data(record):
+                if store.add_earnings_surprises(record):
                     inserted += 1
                     print(f"✅ Inserted/Updated {record['ticker']} - Date: {record['date']}")
                     if record['surprise_percent']:
@@ -132,7 +132,7 @@ def main():
                     surprise_percent,
                     source,
                     created_at
-                FROM earnings_data
+                FROM earnings_surprises
                 WHERE ticker = %s
                 ORDER BY date DESC
                 LIMIT 10
@@ -180,7 +180,7 @@ def main():
                 COUNT(*) FILTER (WHERE surprise_percent > 0) as beats,
                 COUNT(*) FILTER (WHERE surprise_percent < 0) as misses,
                 COUNT(*) FILTER (WHERE surprise_percent = 0) as matches
-            FROM earnings_data
+            FROM earnings_surprises
         """)
         
         stats = cursor.fetchone()
@@ -205,14 +205,14 @@ def main():
         cursor.execute("""
             SELECT column_name, data_type, is_nullable
             FROM information_schema.columns
-            WHERE table_name = 'earnings_data'
+            WHERE table_name = 'earnings_surprises'
             ORDER BY ordinal_position
         """)
         
         columns = cursor.fetchall()
         
         print("=" * 100)
-        print("TABLE STRUCTURE: earnings_data")
+        print("TABLE STRUCTURE: earnings_surprises")
         print("=" * 100)
         for col in columns:
             nullable = "NULL" if col['is_nullable'] == 'YES' else "NOT NULL"

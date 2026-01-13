@@ -67,7 +67,7 @@ async def fetch_premium_data_for_ticker(
         "income_statements": 0,
         "balance_sheets": 0,
         "cash_flow_statements": 0,
-        "earnings_data": 0,
+        "earnings_surprises": 0,
         "analyst_estimates": 0,
         "dcf_valuation": False,
         "esg_scores": False,
@@ -148,8 +148,8 @@ async def fetch_premium_data_for_ticker(
                 source=metric.source
             )
             if success:
-                results["earnings_data"] += 1
-        print(f"     ✅ Stored {results['earnings_data']} growth metrics")
+                results["earnings_surprises"] += 1
+        print(f"     ✅ Stored {results['earnings_surprises']} growth metrics")
     except Exception as e:
         results["errors"].append(f"Financial growth: {e}")
         print(f"     ❌ Financial growth error: {e}")
@@ -274,7 +274,7 @@ async def fetch_premium_data_for_ticker(
             results["income_statements"],
             results["balance_sheets"],
             results["cash_flow_statements"],
-            results["earnings_data"],
+            results["earnings_surprises"],
             results["analyst_estimates"],
             results["insider_trades"],
             results["institutional_holdings"],
@@ -395,7 +395,7 @@ async def fetch_all_premium_data(
     total_income = sum(r.get("income_statements", 0) for r in all_results)
     total_balance = sum(r.get("balance_sheets", 0) for r in all_results)
     total_cash_flow = sum(r.get("cash_flow_statements", 0) for r in all_results)
-    total_earnings = sum(r.get("earnings_data", 0) for r in all_results)
+    total_earnings = sum(r.get("earnings_surprises", 0) for r in all_results)
     total_estimates = sum(r.get("analyst_estimates", 0) for r in all_results)
     total_insider = sum(r.get("insider_trades", 0) for r in all_results)
     total_institutional = sum(r.get("institutional_holdings", 0) for r in all_results)
@@ -414,7 +414,7 @@ async def fetch_all_premium_data(
         "income_statements": total_income,
         "balance_sheets": total_balance,
         "cash_flow_statements": total_cash_flow,
-        "earnings_data": total_earnings,
+        "earnings_surprises": total_earnings,
         "analyst_estimates": total_estimates,
         "insider_trades": total_insider,
         "institutional_holdings": total_institutional,
