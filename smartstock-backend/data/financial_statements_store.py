@@ -100,9 +100,9 @@ class FinancialStatementsStore:
                 )
             """)
             
-            # Earnings data table
+            # Earnings surprises table
             cursor.execute("""
-                CREATE TABLE IF NOT EXISTS earnings_data (
+                CREATE TABLE IF NOT EXISTS earnings_surprises (
                     id SERIAL PRIMARY KEY,
                     ticker VARCHAR(10) NOT NULL,
                     date DATE NOT NULL,
@@ -111,6 +111,7 @@ class FinancialStatementsStore:
                     revenue_actual DOUBLE PRECISION,
                     revenue_estimated DOUBLE PRECISION,
                     surprise_percent DOUBLE PRECISION,
+                    period VARCHAR(10),
                     source VARCHAR(50) DEFAULT 'FMP',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(ticker, date)
@@ -358,7 +359,7 @@ class FinancialStatementsStore:
             
             # Create indexes
             for table in ["income_statements", "balance_sheets", "cash_flow_statements", 
-                          "earnings_data", "insider_trades", "institutional_holdings"]:
+                          "earnings_surprises", "insider_trades", "institutional_holdings"]:
                 cursor.execute(f"""
                     CREATE INDEX IF NOT EXISTS idx_{table}_ticker 
                     ON {table}(ticker)
@@ -505,22 +506,23 @@ class FinancialStatementsStore:
     # Earnings Data
     # ==========================================
     
-    def add_earnings_data(self, data: Dict[str, Any]) -> bool:
-        """Add or update earnings data."""
+    def add_earnings_surprises(self, data: Dict[str, Any]) -> bool:
+        """Add or update earnings surprises data."""
         with get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO earnings_data
+                INSERT INTO earnings_surprises
                 (ticker, date, eps_actual, eps_estimated, revenue_actual,
-                 revenue_estimated, surprise_percent, source)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                 revenue_estimated, surprise_percent, period, source)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (ticker, date)
                 DO UPDATE SET
                     eps_actual = EXCLUDED.eps_actual,
                     eps_estimated = EXCLUDED.eps_estimated,
                     revenue_actual = EXCLUDED.revenue_actual,
                     revenue_estimated = EXCLUDED.revenue_estimated,
-                    surprise_percent = EXCLUDED.surprise_percent
+                    surprise_percent = EXCLUDED.surprise_percent,
+                    period = EXCLUDED.period
             """, (
                 data.get("ticker", "").upper(),
                 data.get("date"),
@@ -529,9 +531,15 @@ class FinancialStatementsStore:
                 data.get("revenue_actual"),
                 data.get("revenue_estimated"),
                 data.get("surprise_percent"),
+                data.get("period"),
                 data.get("source", "FMP")
             ))
             return cursor.rowcount > 0
+    
+    # Backward compatibility alias
+    def add_earnings_data(self, data: Dict[str, Any]) -> bool:
+        """Backward compatibility alias for add_earnings_surprises."""
+        return self.add_earnings_surprises(data)
     
     # ==========================================
     # Insider Trading
@@ -1022,7 +1030,7 @@ class FinancialStatementsStore:
             
             tables = [
                 "income_statements", "balance_sheets", "cash_flow_statements",
-                "earnings_data", "insider_trades", "institutional_holdings",
+                "earnings_surprises", "insider_trades", "institutional_holdings",
                 "company_profiles", "esg_scores", "dcf_valuations",
                 "analyst_estimates", "analyst_consensus", "dividends", "stock_splits"
             ]

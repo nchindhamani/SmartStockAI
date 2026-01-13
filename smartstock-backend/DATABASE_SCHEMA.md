@@ -34,7 +34,7 @@ The SmartStock AI system uses **PostgreSQL** as the primary database for structu
 - `stock_splits` - Stock split history
 
 ### 6. Earnings & Events (1 table)
-- `earnings_data` - Historical earnings surprises and actual vs estimated
+- `earnings_surprises` - Historical earnings surprises and actual vs estimated
 
 ### 7. Ownership & Trading (2 tables)
 - `insider_trades` - Insider trading transactions
@@ -361,7 +361,7 @@ The SmartStock AI system uses **PostgreSQL** as the primary database for structu
 
 ---
 
-### 12. `earnings_data`
+### 12. `earnings_surprises`
 
 **Purpose:** Historical earnings surprises (actual vs estimated).
 
@@ -377,8 +377,8 @@ The SmartStock AI system uses **PostgreSQL** as the primary database for structu
 **Unique Constraint:** `(ticker, date)` - One record per ticker per earnings date
 
 **Indexes:**
-- `idx_earnings_data_ticker` on `ticker` - For fast ticker lookups
-- `idx_earnings_data_date` on `date` - For date range queries
+- `idx_earnings_surprises_ticker` on `ticker` - For fast ticker lookups
+- `idx_earnings_surprises_date` on `date` - For date range queries (if exists)
 
 **Source:** FMP API (`/stable/earnings-calendar`)
 

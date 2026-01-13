@@ -356,7 +356,7 @@ def query_earnings_surprises(ticker: str = "AAPL", limit: int = 10):
                 revenue_actual,
                 revenue_estimated,
                 source
-            FROM earnings_data
+            FROM earnings_surprises
             WHERE ticker = %s
             ORDER BY date DESC
             LIMIT %s
@@ -416,7 +416,7 @@ def get_database_stats():
             ("analyst_ratings", "Analyst Ratings"),
             ("analyst_estimates", "Analyst Estimates"),
             ("analyst_consensus", "Analyst Consensus"),
-            ("earnings_data", "Earnings Surprises"),
+            ("earnings_surprises", "Earnings Surprises"),
         ]
         
         for table, name in tables:

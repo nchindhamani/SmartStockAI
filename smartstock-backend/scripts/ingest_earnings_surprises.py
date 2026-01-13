@@ -233,22 +233,22 @@ def bulk_insert_earnings_surprises(records: List[Dict[str, Any]]) -> int:
         cursor = conn.cursor()
         
         try:
-            psycopg2.extras.execute_values(
-                cursor,
-                """
-                INSERT INTO earnings_data
-                (ticker, date, eps_actual, eps_estimated, revenue_actual,
-                 revenue_estimated, surprise_percent, source)
-                VALUES %s
-                ON CONFLICT (ticker, date)
-                DO UPDATE SET
-                    eps_actual = EXCLUDED.eps_actual,
-                    eps_estimated = EXCLUDED.eps_estimated,
-                    revenue_actual = EXCLUDED.revenue_actual,
-                    revenue_estimated = EXCLUDED.revenue_estimated,
-                    surprise_percent = EXCLUDED.surprise_percent,
-                    source = EXCLUDED.source
-                """,
+                            psycopg2.extras.execute_values(
+                                cursor,
+                                """
+                                INSERT INTO earnings_surprises
+                                (ticker, date, eps_actual, eps_estimated, revenue_actual,
+                                 revenue_estimated, surprise_percent, source)
+                                VALUES %s
+                                ON CONFLICT (ticker, date)
+                                DO UPDATE SET
+                                    eps_actual = EXCLUDED.eps_actual,
+                                    eps_estimated = EXCLUDED.eps_estimated,
+                                    revenue_actual = EXCLUDED.revenue_actual,
+                                    revenue_estimated = EXCLUDED.revenue_estimated,
+                                    surprise_percent = EXCLUDED.surprise_percent,
+                                    source = EXCLUDED.source
+                                """,
                 [
                     (
                         r["ticker"],
