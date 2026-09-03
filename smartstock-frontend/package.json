@@ -2,6 +2,9 @@
   "name": "smartstock-frontend",
   "version": "1.0.0",
   "private": true,
+  "engines": {
+    "node": "20.x"
+  },
   "scripts": {
     "dev": "next dev -p 3001",
     "build": "next build",
