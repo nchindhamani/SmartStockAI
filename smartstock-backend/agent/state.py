@@ -28,6 +28,7 @@ class ToolResult(BaseModel):
     synthesis_text: str = Field(description="Text for the synthesis with citation markers [1], [2]")
     metrics: list[Metric] = Field(default_factory=list, description="Extracted metrics")
     citations: list[Citation] = Field(default_factory=list, description="Source citations")
+    scorecard: Optional[dict] = Field(default=None, description="Multi-factor scorecard summary")
     raw_data: Optional[dict] = Field(default=None, description="Raw data for debugging")
 
 

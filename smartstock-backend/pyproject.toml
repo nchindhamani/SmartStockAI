@@ -33,9 +33,11 @@ dependencies = [
     "langchain-google-genai>=4.0.0",
     "finnhub-python>=2.4.26",
     "edgartools>=5.0.2",
-    "psycopg2-binary>=2.9.9",
-    "apscheduler>=3.10.4",
-    "tqdm>=4.66.0",
+    "bcrypt>=4.2.0",
+    "PyJWT>=2.9.0",
+    "email-validator>=2.2.0",
+    "psycopg2-binary>=2.9.0",
+    "apscheduler>=3.10.0",
 ]
 
 [project.optional-dependencies]

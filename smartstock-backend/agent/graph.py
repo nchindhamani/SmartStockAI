@@ -525,7 +525,8 @@ def synthesizer_node(state: AgentState) -> dict:
                 "source_detail": c.source_detail
             }
             for c in tool_result.citations
-        ]
+        ],
+        "scorecard": tool_result.scorecard
     }
     
     # Add AI message to conversation history

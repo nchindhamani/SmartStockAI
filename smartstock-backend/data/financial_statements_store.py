@@ -112,6 +112,7 @@ class FinancialStatementsStore:
                     revenue_estimated DOUBLE PRECISION,
                     surprise_percent DOUBLE PRECISION,
                     period VARCHAR(10),
+                    period_end_date DATE,
                     source VARCHAR(50) DEFAULT 'FMP',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(ticker, date)

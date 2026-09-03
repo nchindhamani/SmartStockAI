@@ -300,12 +300,13 @@ async def fetch_ticker_data(
         return (ticker, None, error_code, error_msg)
 
 
-async def ingest_market_data(days: int = None) -> Dict[str, Any]:
+async def ingest_market_data(days: int = None, ticker_list: List[str] = None) -> Dict[str, Any]:
     """
     Ingest latest market data from last available date to last market day.
     Only fetches missing dates to minimize API calls.
     
     Args:
+        ticker_list: Optional list of specific tickers to process. If None, processes all tickers.
         days: Deprecated - kept for compatibility but not used.
               The script now automatically fetches from last available date.
     
@@ -348,21 +349,29 @@ async def ingest_market_data(days: int = None) -> Dict[str, Any]:
         print(f"🔄 Market is closed - will refresh today's data ({today}) to replace any intraday data with final EOD")
     print()
     
-    # If start_date is after end_date, we're up to date
-    if start_date > end_date:
-        print("✅ All tickers have up-to-date data!")
-        return {
-            "total_tickers": 0,
-            "successful": 0,
-            "failed": 0,
-            "total_records": 0,
-            "date_range": f"{last_available_date} to {end_date}",
-            "skipped": "All tickers up-to-date"
-        }
-    
     # Get all tickers
-    all_tickers = get_all_tickers()
-    print(f"Found {len(all_tickers)} tickers in database")
+    # Use provided ticker list or get all tickers
+    if ticker_list:
+        all_tickers = [t.upper() for t in ticker_list]
+        print(f"Using provided ticker list: {len(all_tickers)} tickers")
+        # If specific ticker list provided, fetch for the last market day even if it exists for other tickers
+        if start_date > end_date:
+            start_date = end_date  # Fetch data for the last market day for these specific tickers
+            print(f"📅 Fetching data for {end_date} for specified tickers")
+    else:
+        all_tickers = get_all_tickers()
+        print(f"Found {len(all_tickers)} tickers in database")
+        # If start_date is after end_date and no specific ticker list, we're up to date
+        if start_date > end_date:
+            print("✅ All tickers have up-to-date data!")
+            return {
+                "total_tickers": 0,
+                "successful": 0,
+                "failed": 0,
+                "total_records": 0,
+                "date_range": f"{last_available_date} to {end_date}",
+                "skipped": "All tickers up-to-date"
+            }
     print(f"Concurrency: {SEMAPHORE_LIMIT} (max)")
     print()
     
@@ -424,8 +433,10 @@ async def ingest_market_data(days: int = None) -> Dict[str, Any]:
                         print(f"✅ Processed {successful}/{len(ticker_tasks)} tickers...")
                 else:
                     failed += 1
-                    if error_code and error_code not in [400]:  # Don't log 400s (invalid tickers)
+                    if error_code:
                         print(f"❌ {ticker}: {error_code} - {error_msg}")
+                    else:
+                        print(f"❌ {ticker}: No data returned (may be delisted/suspended or no data for date range)")
     
     print()
     print("=" * 80)
@@ -445,10 +456,10 @@ async def ingest_market_data(days: int = None) -> Dict[str, Any]:
     }
 
 
-async def main_async():
+async def main_async(ticker_list: List[str] = None):
     """Async main entry point."""
     try:
-        result = await ingest_market_data()
+        result = await ingest_market_data(ticker_list=ticker_list)
         return result
     except Exception as e:
         print(f"❌ Fatal error: {e}")
@@ -465,7 +476,23 @@ async def main_async():
 
 def main():
     """Main entry point (wrapper for async)."""
-    return asyncio.run(main_async())
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Ingest market data (OHLC) for tickers")
+    parser.add_argument("--tickers", type=str, help="Comma-separated list of tickers to process")
+    parser.add_argument("--ticker-file", type=str, help="File containing one ticker per line")
+    args = parser.parse_args()
+    
+    ticker_list = None
+    if args.ticker_file:
+        with open(args.ticker_file, 'r') as f:
+            ticker_list = [line.strip().upper() for line in f if line.strip()]
+        print(f"📄 Loaded {len(ticker_list)} tickers from {args.ticker_file}")
+    elif args.tickers:
+        ticker_list = [t.strip().upper() for t in args.tickers.split(',')]
+        print(f"📋 Processing {len(ticker_list)} provided tickers")
+    
+    return asyncio.run(main_async(ticker_list=ticker_list))
 
 
 if __name__ == "__main__":

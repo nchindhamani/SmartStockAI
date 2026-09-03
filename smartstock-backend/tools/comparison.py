@@ -8,6 +8,7 @@ from typing import List, Optional
 from datetime import datetime
 from pydantic import BaseModel, Field
 from langchain_core.tools import tool
+from langchain_core.messages import HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from dotenv import load_dotenv
 
@@ -48,7 +49,7 @@ class FinancialComparisonInput(BaseModel):
 
 
 # Synthesis prompt for comparative analysis
-COMPARISON_PROMPT = """You are a senior investment strategist. Analyze and compare the following companies.
+COMPARISON_PROMPT = """You are a senior investment strategist. Provide a CONCISE, STRUCTURED analysis with tables and color-coded insights.
 
 Companies: {tickers}
 Requested Focus: {metrics}
@@ -56,59 +57,418 @@ Requested Focus: {metrics}
 STRUCTURED DATA (from premium database):
 {structured_data}
 
-The data is organized by category:
-- INCOME_STATEMENT: Revenue growth, EBITDA growth, profit margins (profitability metrics)
-  * Revenue growth tells you if the company is "getting bigger" (top-line expansion)
-  * EBITDA growth tells you if the company is "getting richer" (more profitable)
-- BALANCE_SHEET: Asset growth, liability trends (financial health metrics)
-- CASH_FLOW: Operating cash flow, free cash flow (liquidity metrics)
-
 QUALITATIVE CONTEXT (from SEC filings/earnings):
 {qualitative_context}
 
-Instructions:
-1. **CRITICAL - NO HALLUCINATIONS**: 
-   - ONLY use the data provided in the "STRUCTURED DATA" section below
-   - If data is missing for a company or metric, explicitly state "I don't have data for [company/metric]"
-   - DO NOT make up, estimate, or infer missing values
-   - DO NOT use general knowledge or assumptions about companies
-   - If you cannot answer the question with the available data, say: "I don't have sufficient data to answer this question"
-2. **CRITICAL**: Only analyze the companies explicitly listed in the "Companies:" section above. Do NOT add, mention, or analyze any companies that were not requested by the user.
-3. **Data Freshness & Accuracy**:
-   - Always reference the period/date of the data you're using (e.g., "Q4 2025 (ending 2025-09-27)", "TTM (ending 2025-12-20)")
-   - If data has a "VERIFY" warning (⚠️), explicitly note this in your analysis and recommend checking official SEC filings
-   - Distinguish between quarterly growth (single quarter) and TTM growth (trailing twelve months) - they can tell different stories
-   - If the data seems outdated (>90 days old), note this limitation
-4. **Current Market Context (January 2026)**:
-   - Focus on **AI monetization** as the primary growth driver for tech companies:
-     * Microsoft (MSFT): Copilot monetization, Azure AI services, enterprise AI adoption
-     * Apple (AAPL): Apple Intelligence integration, AI-powered features in devices
-   - Modern risks: AI competition, regulatory changes in AI/data privacy, cloud infrastructure scaling
-   - Avoid outdated concerns: Supply chain disruptions (2022-2023 issue), component shortages (largely resolved)
-5. Provide a direct, side-by-side comparison of ONLY the requested companies.
-6. Address "Is it a good time to buy?" by looking at DCF upside and relative valuation (P/E).
-7. Be definitive but professional. Mention which stock shows better growth vs value characteristics.
-8. **Strategic Metric Usage:**
-   - **Revenue growth**: Use to assess if the company is "getting bigger" (top-line expansion)
-   - **EBITDA growth**: Use when analyzing profitability or "getting richer" - reference when:
-     * The query explicitly asks about profitability, margins, or "getting richer"
-     * You're comparing profitability between companies
-     * Revenue growth is strong but you want to assess if profits are keeping pace
-   - Use metrics where they add analytical value to the specific question being asked
-9. Include inline citations [1], [2] referencing the sources provided.
-10. If one stock is clearly superior in a certain metric, state it clearly.
-11. **Data Quality Validation**:
-    - If any metric has a "VERIFY" warning (⚠️), explicitly state: "This value appears unusually high/low and should be verified against official SEC filings (10-Q/10-K)"
-    - For mature tech companies (AAPL, MSFT, GOOGL), revenue growth >15% TTM or >25% quarterly is unusual and warrants verification
-    - If quarterly and TTM growth show significant divergence, explain this discrepancy
+**CRITICAL FORMATTING REQUIREMENTS:**
 
-Respond with a sophisticated investment synthesis. Include citations."""
+1. **KEEP IT SHORT**: Maximum 150 words total. Use bullet points and tables. No verbose explanations.
+
+2. **REQUIRED TABLE FORMAT**:
+   Create a markdown table with a "Winner" column that automatically marks the better value with 🟢. Example:
+   ```
+   | Metric | AAPL | MSFT | Winner |
+   |--------|------|------|--------|
+   | Revenue Growth (TTM) | 12.5% | 15.3% | 🟢 MSFT |
+   | Gross Margin | 45.2% | 68.9% | 🟢 MSFT |
+   | Operating Margin | 30.1% | 43.2% | 🟢 MSFT |
+   | Net Margin | 25.4% | 35.1% | 🟢 MSFT |
+   | P/E Ratio | 28.5 | 32.1 | Equally High |
+   | Current Price | $175.50 | $420.30 | - |
+   | DCF Intrinsic Value | $200.00 | $450.00 | - |
+   | DCF Upside | 14.0% | 7.1% | 🟢 AAPL |
+   ```
+   Rules for Winner column:
+   - For percentages (growth, margins): Higher is better → mark winner with 🟢
+   - For P/E Ratio: Lower is better → mark winner with 🟢, **BUT** if the P/E values differ by < 3% (close enough), set Winner to "Equally High"
+   - For DCF Upside: Higher is better → mark winner with 🟢
+   - For prices/values: Use "-" (not comparable)
+   - Always include the ticker name after 🟢 (e.g., "🟢 MSFT")
+   Use the actual ticker names from the "Companies:" line above as column headers. Include ALL available metrics in the table. Always show Current Price values (do not leave as N/A) when provided in STRUCTURED DATA.
+
+3. **USE EMOJIS FOR SENTIMENT** (DO NOT use [POSITIVE]/[NEGATIVE]/[CAUTION] text):
+   - 🟢 for good news - growth, good margins, attractive valuation, winners
+   - 🔴 for bad news - decline, poor margins, overvaluation, concerns
+   - 🟡 for warnings - verify flags, unusual values, risks, caution needed
+   - Example: "🟢 MSFT demonstrates stronger TTM revenue growth (18.43%) [1]" or "🟡 DCF upside of 312% - verify model inputs [1]"
+   - Use emojis naturally in bullet points and analysis, not as standalone markers
+
+4. **STRUCTURE** (keep each section brief):
+   ```
+   ## Executive Summary
+   [1 sentence: Buy/Sell/Hold recommendation with key reason]
+   
+   ## Key Metrics
+   [TABLE HERE - all metrics side-by-side with 🟢 emoji in "Winner" column]
+   
+   ## Strategic Breakdown
+   - 🟢 Margin Leader: [Company] is the high-quality winner here, with [metric] [citation]
+   - 🟡 Growth Trap: [Observation about growth concerns] [citation]
+   - 🔴 Valuation Warning: [Valuation concerns] [citation]
+   
+   ## Verdict
+   **Internal Multi-Factor Stance:** [BUY/SELL/HOLD] **Internal DCF Stance:** [BUY/SELL/HOLD] **Analyst Consensus:** [Strong Buy/Buy/Hold/Sell/Strong Sell]
+   **Scorecard Winner:** [TICKER]
+   
+   **Conflict Alert:** [If internal DCF stance conflicts with analyst consensus, add: "While Wall Street maintains a [consensus] consensus, our internal valuation models suggest a [DCF stance] due to [reason]." Otherwise omit this line.]
+   
+   [1 sentence: Clear recommendation based on Multi-Factor Stance]
+   ```
+
+5. **VALUATION SANITY**:
+   - DCF upside > 100% → mark as 🟡 "Model may have unrealistic assumptions - verify"
+   - P/E > 40 for mature companies → mark as 🔴
+   - Revenue growth drops >50% QoQ → mark as 🟡 and note the trend change
+   
+6. **TREND INDICATORS**:
+   - When comparing quarterly vs TTM growth, note trends:
+     * If Q2 growth < TTM growth → add 📉 to indicate slowing momentum
+     * If Q2 growth > TTM growth → add 📈 to indicate accelerating growth
+   - Use trend arrows naturally in analysis: "While MSFT shows 18.4% TTM growth 📈, its recent 6.17% Q2 growth 📉 suggests..."
+
+7. **NO HALLUCINATIONS**: Only use STRUCTURED DATA. Missing data = "N/A" in table. VERIFY warnings = 🟡.
+
+8. **BADGES & CONFLICT ALERT**:
+   - Tie the top internal badge to **Multi-Factor Stance** (overall scorecard). DCF is only one input.
+   - Add a second badge: "Analyst Consensus: Strong Buy" to reflect external opinion.
+   - If internal DCF-based stance conflicts with the analyst consensus, explicitly add a "Conflict Alert" sentence:  
+     Example: "While Wall Street maintains a Strong Buy consensus, our internal valuation models suggest a Hold due to extreme overvaluation."
+
+9. **CITATIONS**: Include [1], [2] inline.
+
+10. **DO NOT RENDER A SCORECARD TABLE** in the response. The UI already renders the scorecard. Only reference its winner/stance in the Verdict.
+
+**RESPOND WITH TABLES (including Winner column), EMOJIS (🟢🔴🟡), AND TREND ARROWS (📈📉). BE CONCISE AND DIRECT.**"""
+
+
+def _clamp_score(value: float, low: float = 0, high: float = 100) -> float:
+    return max(low, min(high, value))
+
+
+def _score_from_buckets(value: Optional[float], buckets: List[tuple[float, float, float]]) -> Optional[float]:
+    """
+    buckets: list of (min_value, max_value, score)
+    """
+    if value is None:
+        return None
+    for min_v, max_v, score in buckets:
+        if min_v <= value < max_v:
+            return score
+    return None
+
+
+def _get_structured_value(structured_data: dict, ticker: str, key: str) -> Optional[float]:
+    data = structured_data.get(ticker, {}).get(key)
+    if not data:
+        return None
+    try:
+        return float(data.get("value"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _fetch_latest_balance_sheet(ticker: str) -> Optional[dict]:
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT total_assets, total_liabilities, total_debt, cash_and_equivalents, date
+            FROM balance_sheets
+            WHERE ticker = %s
+            ORDER BY date DESC
+            LIMIT 1
+        """, (ticker.upper(),))
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "total_assets": row[0],
+            "total_liabilities": row[1],
+            "total_debt": row[2],
+            "cash_and_equivalents": row[3],
+            "date": row[4]
+        }
+
+
+def _fetch_latest_cash_flow(ticker: str) -> Optional[dict]:
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT operating_cash_flow, free_cash_flow, date
+            FROM cash_flow_statements
+            WHERE ticker = %s
+            ORDER BY date DESC
+            LIMIT 1
+        """, (ticker.upper(),))
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "operating_cash_flow": row[0],
+            "free_cash_flow": row[1],
+            "date": row[2]
+        }
+
+
+def _compute_scorecard(
+    tickers: List[str],
+    structured_data: dict,
+    statements_store: "FinancialStatementsStore",
+    metrics_store: "MetricsStore"
+) -> dict:
+    weights = {
+        "Valuation": 0.30,
+        "Growth": 0.20,
+        "Quality": 0.20,
+        "Financial Health": 0.15,
+        "Sentiment": 0.10,
+        "Momentum": 0.05
+    }
+
+    factor_rows = []
+    overall_scores = {}
+    coverage = {}
+    factor_scores_by_ticker = {t: {} for t in tickers}
+
+    for ticker in tickers:
+        # Valuation: DCF upside + P/E ratio
+        dcf_upside = _get_structured_value(structured_data, ticker, "dcf_upside")
+        pe_ratio = _get_structured_value(structured_data, ticker, "pe_ratio")
+        dcf_score = _score_from_buckets(dcf_upside, [
+            (-1000, -30, 20),
+            (-30, -10, 35),
+            (-10, 10, 50),
+            (10, 30, 70),
+            (30, 1000, 85)
+        ])
+        pe_score = _score_from_buckets(pe_ratio, [
+            (0, 15, 85),
+            (15, 25, 70),
+            (25, 35, 50),
+            (35, 45, 35),
+            (45, 10_000, 20)
+        ])
+        valuation_scores = [s for s in [dcf_score, pe_score] if s is not None]
+        factor_scores_by_ticker[ticker]["Valuation"] = (
+            sum(valuation_scores) / len(valuation_scores) if valuation_scores else None
+        )
+
+        # Growth: revenue_growth + ebitda_growth
+        revenue_growth = _get_structured_value(structured_data, ticker, "revenue_growth")
+        ebitda_growth = _get_structured_value(structured_data, ticker, "ebitda_growth")
+        growth_score = _score_from_buckets(revenue_growth, [
+            (-1000, -10, 20),
+            (-10, 0, 35),
+            (0, 10, 55),
+            (10, 20, 70),
+            (20, 1000, 85)
+        ])
+        ebitda_score = _score_from_buckets(ebitda_growth, [
+            (-1000, -10, 20),
+            (-10, 0, 35),
+            (0, 10, 55),
+            (10, 20, 70),
+            (20, 1000, 85)
+        ])
+        growth_scores = [s for s in [growth_score, ebitda_score] if s is not None]
+        factor_scores_by_ticker[ticker]["Growth"] = (
+            sum(growth_scores) / len(growth_scores) if growth_scores else None
+        )
+
+        # Quality: margins
+        gross_margin = _get_structured_value(structured_data, ticker, "gross_margin")
+        operating_margin = _get_structured_value(structured_data, ticker, "operating_margin")
+        net_margin = _get_structured_value(structured_data, ticker, "net_margin")
+        margin_values = [m for m in [gross_margin, operating_margin, net_margin] if m is not None]
+        avg_margin = sum(margin_values) / len(margin_values) if margin_values else None
+        quality_score = _score_from_buckets(avg_margin, [
+            (-1000, 5, 20),
+            (5, 15, 35),
+            (15, 30, 55),
+            (30, 50, 70),
+            (50, 1000, 85)
+        ])
+        factor_scores_by_ticker[ticker]["Quality"] = quality_score
+
+        # Financial Health: leverage and cash cushion
+        balance_sheet = _fetch_latest_balance_sheet(ticker)
+        cash_flow = _fetch_latest_cash_flow(ticker)
+        health_score = None
+        if balance_sheet:
+            total_assets = balance_sheet.get("total_assets")
+            total_debt = balance_sheet.get("total_debt")
+            cash = balance_sheet.get("cash_and_equivalents")
+            if total_assets and total_debt is not None:
+                leverage = (total_debt / total_assets) if total_assets else None
+                health_score = _score_from_buckets(leverage, [
+                    (0, 0.3, 85),
+                    (0.3, 0.5, 70),
+                    (0.5, 0.7, 45),
+                    (0.7, 10, 25)
+                ])
+            if health_score is not None and cash is not None and total_debt and total_debt > 0:
+                net_debt_ratio = (total_debt - cash) / total_debt
+                if net_debt_ratio < 0:
+                    health_score = _clamp_score(health_score + 10)
+        factor_scores_by_ticker[ticker]["Financial Health"] = health_score
+
+        # Sentiment: analyst consensus
+        consensus = statements_store.get_analyst_consensus(ticker)
+        sentiment_score = None
+        if consensus:
+            rating = (consensus.get("consensus_rating") or "").strip().lower()
+            rating_map = {
+                "strong buy": 85,
+                "buy": 70,
+                "hold": 50,
+                "sell": 30,
+                "strong sell": 15
+            }
+            if rating in rating_map:
+                sentiment_score = rating_map[rating]
+            else:
+                # Fallback to counts
+                sb = consensus.get("strong_buy") or 0
+                b = consensus.get("buy") or 0
+                h = consensus.get("hold") or 0
+                s = consensus.get("sell") or 0
+                ss = consensus.get("strong_sell") or 0
+                total = sb + b + h + s + ss
+                if total > 0:
+                    score = (sb * 2 + b * 1 - s * 1 - ss * 2) / total
+                    sentiment_score = _clamp_score(50 + score * 25)
+        factor_scores_by_ticker[ticker]["Sentiment"] = sentiment_score
+
+        # Momentum: 3M price change
+        momentum_score = None
+        price_history = metrics_store.get_price_history(ticker, limit=90)
+        if price_history and len(price_history) >= 20:
+            latest = price_history[0].get("close")
+            oldest = price_history[-1].get("close")
+            if latest and oldest:
+                change_pct = ((latest - oldest) / oldest) * 100
+                momentum_score = _score_from_buckets(change_pct, [
+                    (-1000, -20, 20),
+                    (-20, -5, 35),
+                    (-5, 5, 50),
+                    (5, 20, 65),
+                    (20, 1000, 80)
+                ])
+        factor_scores_by_ticker[ticker]["Momentum"] = momentum_score
+
+    # Build factor rows and overall scores
+    for factor, weight in weights.items():
+        scores = {t: factor_scores_by_ticker[t].get(factor) for t in tickers}
+        winner = None
+        valid_scores = {t: s for t, s in scores.items() if s is not None}
+        if valid_scores:
+            winner = max(valid_scores, key=valid_scores.get)
+        factor_rows.append({
+            "factor": factor,
+            "weight": weight,
+            "scores": scores,
+            "winner": winner
+        })
+
+    for ticker in tickers:
+        total_weight = 0.0
+        weighted_sum = 0.0
+        available = 0
+        for factor, weight in weights.items():
+            score = factor_scores_by_ticker[ticker].get(factor)
+            if score is None:
+                continue
+            weighted_sum += score * weight
+            total_weight += weight
+            available += 1
+        coverage[ticker] = available
+        overall_scores[ticker] = round(weighted_sum / total_weight, 2) if total_weight else 0.0
+
+    # Overall verdict based on top score
+    overall_winner = max(overall_scores, key=overall_scores.get) if overall_scores else None
+    top_score = overall_scores.get(overall_winner, 0) if overall_winner else 0
+    if top_score >= 70:
+        overall_verdict = "BUY"
+    elif top_score >= 50:
+        overall_verdict = "HOLD"
+    else:
+        overall_verdict = "SELL"
+
+    avg_coverage = sum(coverage.values()) / len(coverage) if coverage else 0
+    if avg_coverage >= 5:
+        confidence = "High"
+    elif avg_coverage >= 3:
+        confidence = "Moderate"
+    else:
+        confidence = "Low"
+
+    return {
+        "factors": factor_rows,
+        "overall_scores": overall_scores,
+        "overall_winner": overall_winner,
+        "overall_verdict": overall_verdict,
+        "confidence": confidence,
+        "coverage": coverage
+    }
+
+
+def _build_fallback_synthesis(error_message: str) -> str:
+    lowered = (error_message or "").lower()
+    if "resource_exhausted" in lowered or "quota" in lowered or "429" in lowered:
+        detail = "Gemini API quota has been exceeded."
+    else:
+        detail = "Gemini API is currently unavailable."
+    return (
+        "## Executive Summary\n"
+        f"{detail} Please retry after the quota resets or upgrade your plan.\n\n"
+        "## Verdict\n"
+        f"{detail} No analysis was generated."
+    )
+
+
+def _assign_unique_citations(synthesis_text: str, citations: List[Citation]) -> tuple[str, List[Citation]]:
+    """
+    Ensure each citation marker in synthesis is unique and maps to a citation entry.
+    If the model reused [1] everywhere, we renumber sequentially and duplicate
+    citation entries as needed.
+    """
+    if not synthesis_text or not citations:
+        return synthesis_text, citations
+
+    import re
+
+    markers = list(re.finditer(r"\[(\d+)\]", synthesis_text))
+    if not markers:
+        return synthesis_text, citations
+
+    new_citations: List[Citation] = []
+    updated = synthesis_text
+    offset = 0
+
+    for idx, match in enumerate(markers, start=1):
+        original_id = int(match.group(1))
+        source = next((c for c in citations if c.id == original_id), citations[0])
+        new_citations.append(Citation(
+            id=idx,
+            source_type=source.source_type,
+            source_detail=source.source_detail
+        ))
+
+        start, end = match.start() + offset, match.end() + offset
+        replacement = f"[{idx}]"
+        updated = updated[:start] + replacement + updated[end:]
+        offset += len(replacement) - (end - start)
+
+    return updated, new_citations
 
 
 def select_relevant_metrics_by_category(metrics: List[str]) -> Optional[List[str]]:
     """
     Intelligently select relevant metric categories based on query intent.
     Returns list of categories to fetch, or None to fetch all.
+    
+    NOTE: Margins (gross_margin, operating_margin, net_margin) and P/E ratio
+    are stored in KEY_METRICS category, not INCOME_STATEMENT. This function
+    ensures both categories are queried when looking for profitability metrics.
     """
     if not metrics:
         return None
@@ -116,10 +476,12 @@ def select_relevant_metrics_by_category(metrics: List[str]) -> Optional[List[str
     metrics_lower = [m.lower() for m in metrics]
     categories = []
     
-    # Profitability/profit-focused queries -> INCOME_STATEMENT
+    # Profitability/profit-focused queries -> INCOME_STATEMENT + KEY_METRICS
+    # Note: Margins and P/E ratio are in KEY_METRICS, not INCOME_STATEMENT
     if any(keyword in " ".join(metrics_lower) for keyword in 
-           ["profit", "margin", "ebitda", "richer", "profitability", "earnings", "income"]):
+           ["profit", "margin", "ebitda", "richer", "profitability", "earnings", "income", "pe_ratio", "p/e", "valuation"]):
         categories.append("INCOME_STATEMENT")
+        categories.append("KEY_METRICS")  # Margins and P/E are stored here
     
     # Growth-focused queries -> INCOME_STATEMENT
     if any(keyword in " ".join(metrics_lower) for keyword in 
@@ -327,7 +689,7 @@ def compare_financial_data(
                     # Match requested metrics or strategically important ones
                     should_include = (
                         any(req.lower() in metric_name.lower() for req in metrics) or
-                        metric_name in ["current_price", "pe_ratio", "revenue_growth", "gross_margin"] or
+                        metric_name in ["current_price", "pe_ratio", "revenue_growth", "gross_margin", "operating_margin", "net_margin"] or
                         # Include ebitda_growth only when analyzing profitability or when explicitly requested
                         (metric_name == "ebitda_growth" and (
                             any("profit" in req.lower() or "richer" in req.lower() or "ebitda" in req.lower() 
@@ -348,9 +710,15 @@ def compare_financial_data(
                                 elif m.get("period") == "TTM" and abs(growth_value) > 15:
                                     data_quality_note = "VERIFY: High TTM growth - check recent quarters"
                         
+                        # Normalize percentages for margins stored as decimals (e.g., 0.32 -> 32%)
+                        value = m["metric_value"]
+                        unit = m["metric_unit"] or ""
+                        if metric_name.endswith("margin") and isinstance(value, (int, float)) and 0 < value < 1:
+                            value = value * 100
+                            unit = "%"
                         structured_data[ticker][metric_name] = {
-                            "value": m["metric_value"],
-                            "unit": m["metric_unit"] or "",
+                            "value": value,
+                            "unit": unit,
                             "period": m["period"],
                             "period_end_date": period_end_date,  # Store for reference
                             "category": category,  # Include category for context
@@ -439,22 +807,59 @@ def compare_financial_data(
                         "unit": "USD",
                         "period": price_history[0]["date"].strftime("%Y-%m-%d") if hasattr(price_history[0]["date"], 'strftime') else str(price_history[0]["date"])
                     }
+                else:
+                    # Final fallback: if DCF has stock_price, use it
+                    latest_dcf = statements_store.get_latest_dcf(ticker)
+                    if latest_dcf and latest_dcf.get("stock_price"):
+                        structured_data[ticker]["current_price"] = {
+                            "value": float(latest_dcf["stock_price"]),
+                            "unit": "USD",
+                            "period": "latest (from dcf_valuations)"
+                        }
         except Exception as e:
             print(f"[Comparison Tool] Price fetch error for {ticker}: {e}")
         
         # 3. Fetch from FinancialStatementsStore (Premium DCF & Statements)
+        # IMPORTANT: Recalculate DCF upside using CURRENT stock price, not stored upside_percent
+        # The stored upside_percent uses the stock price at DCF calculation time, which may be stale
         try:
             dcf = statements_store.get_latest_dcf(ticker)
             if dcf:
-                structured_data[ticker]["dcf_upside"] = {
-                    "value": round(dcf["upside_percent"], 2),
-                    "unit": "%",
-                    "period": "current"
-                }
+                dcf_value = dcf["dcf_value"]
+                # Get current stock price (already fetched above)
+                current_price = None
+                if "current_price" in structured_data[ticker]:
+                    current_price = structured_data[ticker]["current_price"]["value"]
+                
+                data_quality_note = None
+                # Recalculate upside using current price
+                if current_price and dcf_value and current_price > 0:
+                    recalculated_upside = ((dcf_value - current_price) / current_price) * 100
+                    dcf_entry = {
+                        "value": round(recalculated_upside, 2),
+                        "unit": "%",
+                        "period": "current"
+                    }
+                    # Sanity flag: extreme upside/ downside
+                    if abs(recalculated_upside) > 50:
+                        data_quality_note = "VERIFY: Extreme DCF upside; confirm inputs/terminal growth/discount rate"
+                        dcf_entry["data_quality_note"] = data_quality_note
+                    structured_data[ticker]["dcf_upside"] = dcf_entry
+                    print(f"[Comparison Tool] Recalculated DCF upside for {ticker}: {recalculated_upside:.2f}% (using current price ${current_price:.2f} vs DCF ${dcf_value:.2f})")
+                else:
+                    # Fallback to stored upside if current price not available
+                    structured_data[ticker]["dcf_upside"] = {
+                        "value": round(dcf["upside_percent"], 2),
+                        "unit": "%",
+                        "period": "current"
+                    }
+                    print(f"[Comparison Tool] Using stored DCF upside for {ticker} (current price not available)")
+                
                 structured_data[ticker]["intrinsic_value"] = {
-                    "value": round(dcf["dcf_value"], 2),
+                    "value": round(dcf_value, 2),
                     "unit": "USD",
-                    "period": "current"
+                    "period": "current",
+                    "data_quality_note": data_quality_note
                 }
         except Exception as e:
             print(f"[Comparison Tool] StatementsStore error for {ticker}: {e}")
@@ -500,7 +905,20 @@ def compare_financial_data(
             source_detail=f"{ticker} financials from FMP/Finnhub"
         ))
         citation_id += 1
-    
+
+    # Multi-factor scorecard (beyond DCF)
+    scorecard = _compute_scorecard(tickers, structured_data, statements_store, metrics_store)
+    structured_data["_scorecard"] = scorecard
+
+    # Add overall score metrics to snapshot for UI cards
+    for ticker, score in scorecard.get("overall_scores", {}).items():
+        color = "green" if score >= 70 else "blue" if score >= 50 else "red"
+        result_metrics.append(Metric(
+            key=f"{ticker} Overall Score",
+            value=f"{score:.2f}",
+            color_context=color
+        ))
+
     # QUALITATIVE CONTEXT - Vector search in ChromaDB
     vector_store = get_vector_store()
     qualitative_context = []
@@ -595,7 +1013,8 @@ If you'd like, I can check what data IS available for these companies and provid
             synthesis_text=synthesis_text,
             metrics=result_metrics[:12],
             citations=citations[:8],
-            raw_data={"tickers": tickers, "insufficient_data": True, "missing_details": missing_data_details}
+            raw_data={"tickers": tickers, "insufficient_data": True, "missing_details": missing_data_details, "scorecard": scorecard},
+            scorecard=scorecard
         )
     
     # SYNTHESIS
@@ -610,6 +1029,17 @@ If you'd like, I can check what data IS available for these companies and provid
         # Format structured data for prompt with period/date information
         structured_str = ""
         for ticker, ticker_metrics in structured_data.items():
+            if ticker == "_scorecard":
+                structured_str += "\nSCORECARD:\n"
+                structured_str += f"  - Overall Scores: {ticker_metrics.get('overall_scores')}\n"
+                structured_str += f"  - Overall Winner: {ticker_metrics.get('overall_winner')}\n"
+                structured_str += f"  - Overall Verdict: {ticker_metrics.get('overall_verdict')}\n"
+                structured_str += f"  - Confidence: {ticker_metrics.get('confidence')}\n"
+                structured_str += f"  - Coverage: {ticker_metrics.get('coverage')}\n"
+                for factor in ticker_metrics.get("factors", []):
+                    structured_str += f"  - {factor.get('factor')} (weight {factor.get('weight')}): {factor.get('scores')}\n"
+                continue
+
             structured_str += f"\n{ticker}:\n"
             for name, data in ticker_metrics.items():
                 period_info = data.get('period', 'N/A')
@@ -633,17 +1063,25 @@ If you'd like, I can check what data IS available for these companies and provid
             qualitative_context="\n\n".join(qualitative_context) if qualitative_context else "No filing context available"
         )
         
-        response = llm.invoke(prompt)
+        # Invoke LLM with proper message format
+        messages = [HumanMessage(content=prompt)]
+        response = llm.invoke(messages)
         synthesis_text = response.content
         
     except Exception as e:
-        synthesis_text = f"Unable to generate investment comparison. Metrics found for: {', '.join(structured_data.keys())}."
+        print(f"[Comparison Tool] LLM synthesis error: {e}")
+        import traceback
+        traceback.print_exc()
+        synthesis_text = _build_fallback_synthesis(str(e))
     
+    synthesis_text, citations = _assign_unique_citations(synthesis_text, citations)
+
     return ToolResult(
         tool_name="compare_financial_data",
         success=bool(structured_data),
         synthesis_text=synthesis_text,
         metrics=result_metrics[:12],  # More metrics for comparison
         citations=citations[:8],
-        raw_data={"tickers": tickers}
+        raw_data={"tickers": tickers, "scorecard": scorecard},
+        scorecard=scorecard
     )

@@ -2,7 +2,7 @@
 # SmartStock AI - Pydantic Data Schemas
 # These models define the API contract between backend and frontend
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 from typing import List, Optional
 
 
@@ -53,6 +53,10 @@ class AgentResponse(BaseModel):
     citations: List[Citation] = Field(
         description="The verifiable source references used for the answer."
     )
+    scorecard: Optional[dict] = Field(
+        default=None,
+        description="Multi-factor scorecard summary for verdict explainability."
+    )
 
 
 class QueryRequest(BaseModel):
@@ -64,6 +68,27 @@ class QueryRequest(BaseModel):
     )
     chat_id: str = Field(
         default="default-session",
-        description="Session identifier for conversation continuity (future use)."
+        description="Session identifier for conversation continuity (scoped to the signed-in user)."
     )
+
+
+class RegisterRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=72)
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=1, max_length=72)
+
+
+class UserPublic(BaseModel):
+    id: str
+    email: str
+
+
+class AuthResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserPublic
 

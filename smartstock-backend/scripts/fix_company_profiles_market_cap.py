@@ -29,6 +29,7 @@ load_dotenv()
 # Configuration
 SEMAPHORE_LIMIT = 10  # Moderate concurrency to avoid rate limits
 REQUEST_DELAY = 0.3   # 300ms delay between requests
+TICKER_TIMEOUT = 30   # 30 seconds timeout per ticker
 
 
 async def fix_market_cap_for_ticker(
@@ -36,22 +37,82 @@ async def fix_market_cap_for_ticker(
     ticker: str,
     semaphore: asyncio.Semaphore
 ) -> Dict[str, Any]:
-    """Fetch and update company profile for a single ticker."""
-    async with semaphore:
-        await asyncio.sleep(REQUEST_DELAY)
-        
-        profile, error = await fetch_company_profile(session, ticker, semaphore)
-        
-        if error:
-            return {"ticker": ticker, "status": "failed", "error": error}
-        
-        if profile:
-            # Use existing bulk_insert_profiles which handles ON CONFLICT UPDATE
-            # This will update market_cap and avg_volume with correct values
-            count = bulk_insert_profiles([profile])
-            return {"ticker": ticker, "status": "success", "updated": count > 0}
-        
-        return {"ticker": ticker, "status": "failed", "error": "No profile data"}
+    """Fetch and update company profile for a single ticker with timeout and exception handling."""
+    ticker_start_time = datetime.now()
+    
+    try:
+        async with semaphore:
+            await asyncio.sleep(REQUEST_DELAY)
+            
+            # Wrap fetch in timeout
+            try:
+                profile, error = await asyncio.wait_for(
+                    fetch_company_profile(session, ticker, semaphore),
+                    timeout=TICKER_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                duration = (datetime.now() - ticker_start_time).total_seconds()
+                return {
+                    "ticker": ticker,
+                    "status": "timeout",
+                    "error": f"Timeout after {duration:.1f}s (exceeded {TICKER_TIMEOUT}s limit)",
+                    "duration": duration
+                }
+            
+            if error:
+                duration = (datetime.now() - ticker_start_time).total_seconds()
+                return {
+                    "ticker": ticker,
+                    "status": "failed",
+                    "error": error,
+                    "duration": duration
+                }
+            
+            if profile:
+                # Use existing bulk_insert_profiles which handles ON CONFLICT UPDATE
+                # This will update market_cap and avg_volume with correct values
+                try:
+                    count = bulk_insert_profiles([profile])
+                    duration = (datetime.now() - ticker_start_time).total_seconds()
+                    return {
+                        "ticker": ticker,
+                        "status": "success",
+                        "updated": count > 0,
+                        "duration": duration
+                    }
+                except Exception as e:
+                    duration = (datetime.now() - ticker_start_time).total_seconds()
+                    return {
+                        "ticker": ticker,
+                        "status": "failed",
+                        "error": f"Database insert error: {str(e)}",
+                        "duration": duration
+                    }
+            
+            duration = (datetime.now() - ticker_start_time).total_seconds()
+            return {
+                "ticker": ticker,
+                "status": "failed",
+                "error": "No profile data",
+                "duration": duration
+            }
+    
+    except asyncio.TimeoutError:
+        duration = (datetime.now() - ticker_start_time).total_seconds()
+        return {
+            "ticker": ticker,
+            "status": "timeout",
+            "error": f"Overall timeout after {duration:.1f}s",
+            "duration": duration
+        }
+    except Exception as e:
+        duration = (datetime.now() - ticker_start_time).total_seconds()
+        return {
+            "ticker": ticker,
+            "status": "error",
+            "error": f"Unexpected error: {type(e).__name__}: {str(e)}",
+            "duration": duration
+        }
 
 
 async def main():
@@ -81,6 +142,7 @@ async def main():
     print(f"Found {total_tickers} tickers with market_cap = 0 or NULL")
     print(f"Concurrency: {SEMAPHORE_LIMIT}")
     print(f"Request delay: {REQUEST_DELAY}s")
+    print(f"Timeout per ticker: {TICKER_TIMEOUT}s")
     print()
     
     # Create semaphore for concurrency control
@@ -89,28 +151,64 @@ async def main():
     start_time = datetime.now()
     successful = 0
     failed = 0
+    timeout_count = 0
+    error_count = 0
+    timeout_tickers = []
     
     async with aiohttp.ClientSession() as session:
-        # Create tasks for all tickers
-        tasks = [
-            fix_market_cap_for_ticker(session, ticker, semaphore)
-            for ticker in tickers_to_fix
-        ]
-        
-        # Process with progress updates
-        for i, task in enumerate(asyncio.as_completed(tasks), 1):
-            result = await task
-            if result.get("status") == "success":
-                successful += 1
-            else:
-                failed += 1
-                error = result.get("error", "Unknown error")
-                if failed <= 20:  # Only show first 20 errors to avoid spam
-                    print(f"❌ {result['ticker']}: {error}")
+        # Process tickers one by one to better track timeouts
+        for i, ticker in enumerate(tickers_to_fix, 1):
+            try:
+                result = await fix_market_cap_for_ticker(session, ticker, semaphore)
+                
+                if result.get("status") == "success":
+                    successful += 1
+                    duration = result.get("duration", 0)
+                    if duration > 5:  # Log slow but successful operations
+                        print(f"⚠️  {ticker}: Success but took {duration:.1f}s")
+                elif result.get("status") == "timeout":
+                    timeout_count += 1
+                    timeout_tickers.append(ticker)
+                    duration = result.get("duration", 0)
+                    error = result.get("error", "Timeout")
+                    print(f"⏱️  TIMEOUT: {ticker} - {error}")
+                    print(f"   Inspecting timeout reason for {ticker}...")
+                    
+                    # Inspect timeout reason
+                    print(f"   - Duration: {duration:.1f}s")
+                    print(f"   - Ticker: {ticker}")
+                    print(f"   - Possible causes:")
+                    print(f"     * API rate limiting (429 errors)")
+                    print(f"     * Network connectivity issues")
+                    print(f"     * FMP API slow response")
+                    print(f"     * Database connection timeout")
+                    print(f"     * Semaphore blocking (too many concurrent requests)")
+                    print()
+                elif result.get("status") == "error":
+                    error_count += 1
+                    failed += 1
+                    error = result.get("error", "Unknown error")
+                    duration = result.get("duration", 0)
+                    print(f"❌ ERROR: {ticker} - {error} (took {duration:.1f}s)")
+                else:
+                    failed += 1
+                    error = result.get("error", "Unknown error")
+                    duration = result.get("duration", 0)
+                    if failed <= 20:  # Only show first 20 errors to avoid spam
+                        print(f"❌ {ticker}: {error} (took {duration:.1f}s)")
+                
+                # Progress update every 100 tickers or on timeout
+                if i % 100 == 0 or result.get("status") == "timeout":
+                    elapsed = (datetime.now() - start_time).total_seconds()
+                    print(f"Progress: {i}/{total_tickers} ({i/total_tickers*100:.1f}%) - ✅ {successful} successful, ❌ {failed} failed, ⏱️  {timeout_count} timeouts - Elapsed: {elapsed:.1f}s")
+                    print()
             
-            # Progress update every 100 tickers
-            if i % 100 == 0:
-                print(f"Progress: {i}/{total_tickers} ({i/total_tickers*100:.1f}%) - ✅ {successful} successful, ❌ {failed} failed")
+            except Exception as e:
+                error_count += 1
+                failed += 1
+                print(f"❌ EXCEPTION processing {ticker}: {type(e).__name__}: {str(e)}")
+                import traceback
+                traceback.print_exc()
     
     duration = (datetime.now() - start_time).total_seconds()
     
@@ -120,8 +218,26 @@ async def main():
     print("=" * 80)
     print(f"✅ Successful: {successful}")
     print(f"❌ Failed: {failed}")
+    print(f"⏱️  Timeouts: {timeout_count}")
+    print(f"⚠️  Errors: {error_count}")
     print(f"⏱️  Duration: {duration:.1f}s ({duration/60:.1f} minutes)")
     print()
+    
+    if timeout_count > 0:
+        print("=" * 80)
+        print("TIMEOUT ANALYSIS")
+        print("=" * 80)
+        print(f"Tickers that timed out ({timeout_count}): {', '.join(timeout_tickers[:20])}")
+        if len(timeout_tickers) > 20:
+            print(f"... and {len(timeout_tickers) - 20} more")
+        print()
+        print("Recommendations:")
+        print("  - Check FMP API status and rate limits")
+        print("  - Reduce SEMAPHORE_LIMIT if too many concurrent requests")
+        print("  - Increase REQUEST_DELAY to slow down request rate")
+        print("  - Check network connectivity")
+        print("  - Verify database connection pool is healthy")
+        print()
     
     # Verify the fix
     with get_connection() as conn:

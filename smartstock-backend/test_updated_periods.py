@@ -47,7 +47,10 @@ async def test_updated_periods():
             print(f"✅ Individual Ratings:")
             print(f"   Total: {row[0]:,} records")
             print(f"   Date range: {row[1]} to {row[2]}")
-            print(f"   Span: ~{row[3].days / 365:.1f} years")
+            span_days = row[3]
+            if hasattr(span_days, "days"):
+                span_days = span_days.days
+            print(f"   Span: ~{span_days / 365:.1f} years")
             print()
         
         # Check estimates (should have both quarterly and annual)

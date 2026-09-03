@@ -36,6 +36,7 @@ SEMAPHORE_LIMIT = 5  # Reduced concurrency to avoid 429 errors
 REQUEST_DELAY = 0.2  # Global delay between API requests (seconds) - maintains steady 5 req/sec
 REQUEST_TIMEOUT = 60  # Increased timeout
 PERIODS_TO_FETCH = 20  # Fetch last 20 quarters (5 years)
+ANNUAL_PERIODS_TO_FETCH = 10  # Fetch last 10 years of annual/FY data
 CHUNK_SIZE = 50  # Process 50 tickers at a time, then bulk insert
 BULK_INSERT_SIZE = 1000  # Bulk insert every 1000 rows
 
@@ -168,6 +169,7 @@ async def fetch_statements(
 ) -> Tuple[str, Dict[str, List[Dict]], str]:
     """
     Fetch all financial statements for a single ticker simultaneously.
+    Fetches only annual (FY) data (10 years) - quarterly data already exists in database.
     
     Returns:
         (ticker, {"income": [...], "balance": [...], "cashflow": [...]}, error_message)
@@ -177,12 +179,6 @@ async def fetch_statements(
         await asyncio.sleep(REQUEST_DELAY)
         
         ticker_upper = ticker.upper()
-        params_base = {
-            "symbol": ticker_upper,
-            "period": "quarter",
-            "limit": PERIODS_TO_FETCH,
-            "apikey": FMP_API_KEY
-        }
         
         urls = {
             "income": f"{FMP_BASE}/income-statement",
@@ -190,12 +186,19 @@ async def fetch_statements(
             "cashflow": f"{FMP_BASE}/cash-flow-statement"
         }
         
-        async def fetch_one(url: str, stmt_type: str) -> Tuple[str, List[Dict], str]:
+        async def fetch_one(url: str, stmt_type: str, period: str, limit: int) -> Tuple[str, List[Dict], str]:
             # Additional delay between statement type requests
             await asyncio.sleep(REQUEST_DELAY)
             
+            params = {
+                "symbol": ticker_upper,
+                "period": period,
+                "limit": limit,
+                "apikey": FMP_API_KEY
+            }
+            
             # Use retry wrapper
-            data, error = await async_fetch_with_retry(session, url, params_base, ticker_upper, stmt_type)
+            data, error = await async_fetch_with_retry(session, url, params, ticker_upper, f"{stmt_type}_{period}")
             
             if error:
                 return (stmt_type, [], error)
@@ -213,7 +216,7 @@ async def fetch_statements(
                         statements.append({
                             "ticker": ticker_upper,
                             "date": item.get("date"),
-                            "period": item.get("period", "Q"),
+                            "period": item.get("period", "Q" if period == "quarter" else "FY"),
                             "revenue": float(item.get("revenue", 0) or 0),
                             "gross_profit": float(item.get("grossProfit", 0) or 0),
                             "operating_income": float(item.get("operatingIncome", 0) or 0),
@@ -231,7 +234,7 @@ async def fetch_statements(
                         statements.append({
                             "ticker": ticker_upper,
                             "date": item.get("date"),
-                            "period": item.get("period", "Q"),
+                            "period": item.get("period", "Q" if period == "quarter" else "FY"),
                             "total_assets": float(item.get("totalAssets", 0) or 0),
                             "total_liabilities": float(item.get("totalLiabilities", 0) or 0),
                             "total_equity": float(item.get("totalStockholdersEquity", 0) or 0),
@@ -250,7 +253,7 @@ async def fetch_statements(
                         statements.append({
                             "ticker": ticker_upper,
                             "date": item.get("date"),
-                            "period": item.get("period", "Q"),
+                            "period": item.get("period", "Q" if period == "quarter" else "FY"),
                             "operating_cash_flow": float(item.get("operatingCashFlow", 0) or 0),
                             "investing_cash_flow": float(item.get("netCashProvidedByInvestingActivities", 0) or 0),  # Fixed: netCashProvidedByInvestingActivities (negative = used)
                             "financing_cash_flow": float(item.get("netCashProvidedByFinancingActivities", 0) or 0),  # Fixed: already correct, negative = used
@@ -266,11 +269,12 @@ async def fetch_statements(
             except Exception as e:
                 return (stmt_type, [], f"JSON parse error: {str(e)}")
         
-        # Fetch all three statement types simultaneously
+        # Fetch only annual data (10 years) - quarterly data already exists
         tasks = [
-            fetch_one(urls["income"], "income"),
-            fetch_one(urls["balance"], "balance"),
-            fetch_one(urls["cashflow"], "cashflow")
+            # Annual data (10 years)
+            fetch_one(urls["income"], "income", "annual", ANNUAL_PERIODS_TO_FETCH),
+            fetch_one(urls["balance"], "balance", "annual", ANNUAL_PERIODS_TO_FETCH),
+            fetch_one(urls["cashflow"], "cashflow", "annual", ANNUAL_PERIODS_TO_FETCH),
         ]
         
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -286,7 +290,8 @@ async def fetch_statements(
                 if error:
                     errors.append(f"{stmt_type}: {error}")
                 else:
-                    statements_dict[stmt_type] = statements
+                    # Combine quarterly and annual data
+                    statements_dict[stmt_type].extend(statements)
         
         error_msg = "; ".join(errors) if errors else ""
         return (ticker, statements_dict, error_msg)
@@ -631,7 +636,8 @@ async def ingest_financial_statements(ticker_list: Optional[List[str]] = None) -
     print(f"Concurrency: {SEMAPHORE_LIMIT}")
     print(f"Request delay: {REQUEST_DELAY}s between requests")
     print(f"Timeout: {REQUEST_TIMEOUT}s per ticker")
-    print(f"Periods to fetch: {PERIODS_TO_FETCH} quarters")
+    print(f"Fetching: Annual (FY) data only - {ANNUAL_PERIODS_TO_FETCH} years")
+    print(f"Note: Quarterly data already exists in database (5 years)")
     print(f"Chunk size: {CHUNK_SIZE} tickers (bulk insert every {CHUNK_SIZE} tickers)")
     print(f"Bulk insert size: {BULK_INSERT_SIZE} rows")
     print()

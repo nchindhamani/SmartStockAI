@@ -13,10 +13,28 @@ export interface Metrics {
   color_context?: 'red' | 'green' | 'blue' | 'yellow' | null;
 }
 
+export interface ScorecardFactor {
+  factor: string;
+  weight: number;
+  scores: Record<string, number | null>;
+  winner?: string | null;
+  notes?: string | null;
+}
+
+export interface Scorecard {
+  factors: ScorecardFactor[];
+  overall_scores: Record<string, number>;
+  overall_winner?: string | null;
+  overall_verdict?: string | null;
+  confidence?: string | null;
+  coverage?: Record<string, number>;
+}
+
 export interface AgentResponse {
   synthesis: string;
   metrics_snapshot: Metrics[];
   citations: Citation[];
+  scorecard?: Scorecard | null;
 }
 
 export interface Message {

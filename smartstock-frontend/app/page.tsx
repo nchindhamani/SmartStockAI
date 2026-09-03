@@ -1,9 +1,12 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import { Message, AgentResponse } from '@/types';
 import RichAgentResponse from '@/components/RichAgentResponse';
-import { Sparkles, TrendingUp, BarChart3, Zap, FileText, Settings, Copy, Check } from 'lucide-react';
+import { useAuth } from '@/components/AuthProvider';
+import { apiFetch } from '@/lib/api';
+import { Sparkles, TrendingUp, BarChart3, Zap, LogOut, Copy, Check } from 'lucide-react';
 
 // Suggested prompts for the home screen
 const SUGGESTED_PROMPTS = [
@@ -12,17 +15,28 @@ const SUGGESTED_PROMPTS = [
   'What caused the 5% drop in NVDA stock last week?',
 ];
 
-// API configuration
-const API_BASE_URL = 'http://localhost:8000';
-const CHAT_ID = 'test-session-1';
-
 export default function SmartStockAI() {
+  const router = useRouter();
+  const { user, token, loading: authLoading, logout } = useAuth();
   const [messages, setMessages] = useState<Message[]>([]);
+  const [chatId, setChatId] = useState<string>('');
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!authLoading && !user) {
+      router.replace('/login');
+    }
+  }, [authLoading, user, router]);
+
+  useEffect(() => {
+    if (user) {
+      setChatId(`user-${user.id}`);
+    }
+  }, [user]);
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
@@ -37,10 +51,15 @@ export default function SmartStockAI() {
   }, []);
 
   const sendQuery = async (query: string) => {
-    if (!query.trim() || isLoading) return;
+    console.log('sendQuery called with:', query, 'isLoading:', isLoading);
+    if (!query.trim() || isLoading) {
+      console.log('sendQuery blocked - empty query or already loading');
+      return;
+    }
 
     setError(null);
     setIsLoading(true);
+    console.log('Starting query...');
 
     // Add user message immediately
     const userMessage: Message = {
@@ -53,22 +72,31 @@ export default function SmartStockAI() {
     setInputValue('');
 
     try {
-      const response = await fetch(`${API_BASE_URL}/api/ask`, {
+      const response = await apiFetch('/api/ask', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        token,
         body: JSON.stringify({
           query,
-          chat_id: CHAT_ID,
+          chat_id: chatId,
         }),
       });
 
+      console.log('Response status:', response.status, response.statusText);
+
+      if (response.status === 401) {
+        await logout();
+        router.replace('/login');
+        return;
+      }
+
       if (!response.ok) {
-        throw new Error(`API error: ${response.status}`);
+        const errorText = await response.text();
+        console.error('API error response:', errorText);
+        throw new Error(`API error: ${response.status} - ${errorText}`);
       }
 
       const data: AgentResponse = await response.json();
+      console.log('Received response data:', data);
 
       // Add assistant message with structured response
       const assistantMessage: Message = {
@@ -83,29 +111,57 @@ export default function SmartStockAI() {
       const errorMessage = err instanceof Error ? err.message : 'An unexpected error occurred';
       setError(errorMessage);
       console.error('SmartStock AI Error:', err);
+      // Log full error details
+      if (err instanceof Error) {
+        console.error('Error name:', err.name);
+        console.error('Error message:', err.message);
+        console.error('Error stack:', err.stack);
+      }
     } finally {
       setIsLoading(false);
+      console.log('Query completed, isLoading set to false');
     }
   };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    e.stopPropagation();
+    console.log('=== FORM SUBMITTED ===', 'inputValue:', inputValue, 'isLoading:', isLoading);
     if (inputValue.trim() && !isLoading) {
+      console.log('Calling sendQuery...');
       sendQuery(inputValue);
+    } else {
+      console.log('Form submission blocked - empty input or loading');
     }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
+      e.stopPropagation();
+      console.log('=== ENTER KEY PRESSED ===', 'inputValue:', inputValue, 'isLoading:', isLoading);
       if (inputValue.trim() && !isLoading) {
+        console.log('Calling sendQuery from Enter key...');
         sendQuery(inputValue);
+      } else {
+        console.log('Enter key blocked - empty input or loading');
       }
     }
   };
 
   const handlePromptClick = (prompt: string) => {
-    sendQuery(prompt);
+    console.log('=== PROMPT CLICKED ===', prompt, 'isLoading:', isLoading);
+    if (isLoading) {
+      console.log('Prompt click blocked - currently loading');
+      return;
+    }
+    // Set the input value and trigger query
+    console.log('Setting input value and calling sendQuery...');
+    setInputValue(prompt);
+    // Use setTimeout to ensure state update doesn't interfere
+    setTimeout(() => {
+      sendQuery(prompt);
+    }, 0);
   };
 
   const dismissError = () => {
@@ -115,6 +171,9 @@ export default function SmartStockAI() {
   const clearChat = () => {
     setMessages([]);
     setError(null);
+    if (user) {
+      setChatId(`user-${user.id}-${Date.now()}`);
+    }
     inputRef.current?.focus();
   };
 
@@ -133,6 +192,32 @@ export default function SmartStockAI() {
 
   // Determine layout state
   const hasMessages = messages.length > 0;
+
+  if (authLoading || !user) {
+    return (
+      <div className="min-h-screen bg-neutral-50 flex items-center justify-center">
+        <div className="w-8 h-8 border-2 border-primary-600 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  const accountControls = (
+    <div className="flex items-center gap-3">
+      <span className="text-sm text-neutral-600 hidden sm:inline">{user.email}</span>
+      <button
+        type="button"
+        onClick={async () => {
+          await logout();
+          router.replace('/login');
+        }}
+        className="text-sm text-neutral-600 hover:text-neutral-900 transition-colors px-3 py-2
+                   hover:bg-neutral-100 rounded-lg flex items-center gap-2"
+      >
+        <LogOut className="w-4 h-4" />
+        Sign out
+      </button>
+    </div>
+  );
 
   // ============================================
   // LAYOUT STATE 1: Home/Initial Input Screen
@@ -154,14 +239,7 @@ export default function SmartStockAI() {
                 </div>
               </div>
               <div className="flex items-center gap-4">
-                <button className="text-sm text-neutral-600 hover:text-neutral-900 transition-colors flex items-center gap-2">
-                  <FileText className="w-4 h-4" />
-                  Docs
-                </button>
-                <button className="text-sm text-neutral-600 hover:text-neutral-900 transition-colors flex items-center gap-2">
-                  <Settings className="w-4 h-4" />
-                  Settings
-                </button>
+                {accountControls}
               </div>
             </div>
           </div>
@@ -245,13 +323,29 @@ export default function SmartStockAI() {
                 <div className="flex flex-wrap gap-3">
                   {SUGGESTED_PROMPTS.map((prompt, index) => (
                     <button
-                      key={index}
-                      onClick={() => handlePromptClick(prompt)}
+                      key={`prompt-${index}`}
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        console.log('=== BUTTON CLICKED ===', prompt);
+                        console.log('isLoading state:', isLoading);
+                        if (!isLoading) {
+                          console.log('Calling handlePromptClick...');
+                          handlePromptClick(prompt);
+                        } else {
+                          console.log('Blocked: currently loading');
+                        }
+                      }}
+                      onMouseDown={(e) => {
+                        console.log('Button mousedown:', prompt);
+                      }}
                       disabled={isLoading}
                       className="px-5 py-2.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 
                                rounded-xl text-sm font-medium transition-all duration-200
-                               hover:shadow-soft active:scale-95 disabled:opacity-50
-                               border border-neutral-200"
+                               hover:shadow-soft active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed
+                               border border-neutral-200 cursor-pointer"
+                      style={{ pointerEvents: isLoading ? 'none' : 'auto' }}
                     >
                       {prompt}
                     </button>
@@ -295,13 +389,16 @@ export default function SmartStockAI() {
             </div>
             <h1 className="text-xl font-bold text-neutral-900">SmartStock AI</h1>
           </div>
-          <button 
-            onClick={clearChat}
-            className="text-sm text-neutral-600 hover:text-neutral-900 transition-colors px-4 py-2 
-                     hover:bg-neutral-100 rounded-lg"
-          >
-            New Chat
-          </button>
+          <div className="flex items-center gap-3">
+            <button 
+              onClick={clearChat}
+              className="text-sm text-neutral-600 hover:text-neutral-900 transition-colors px-4 py-2 
+                       hover:bg-neutral-100 rounded-lg"
+            >
+              New Chat
+            </button>
+            {accountControls}
+          </div>
         </div>
       </header>
 
@@ -374,7 +471,15 @@ export default function SmartStockAI() {
                     </button>
                     <div className="px-6 py-5">
                       {message.agentResponse ? (
-                        <RichAgentResponse response={message.agentResponse} />
+                        <RichAgentResponse 
+                          response={message.agentResponse} 
+                          onCompare={(tickers) => {
+                            // Prefill input with comparison query
+                            const comparisonQuery = `Compare ${tickers.join(' vs ')} with another stock`;
+                            setInputValue(comparisonQuery);
+                            inputRef.current?.focus();
+                          }}
+                        />
                       ) : (
                         <p className="text-neutral-800 leading-relaxed">{message.content}</p>
                       )}

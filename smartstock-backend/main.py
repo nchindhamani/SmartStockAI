@@ -4,7 +4,7 @@
 
 import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, status
+from fastapi import Depends, FastAPI, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -12,8 +12,19 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from dotenv import load_dotenv
 
-from models import AgentResponse, QueryRequest
+from models import AgentResponse, AuthResponse, LoginRequest, QueryRequest, RegisterRequest, UserPublic
 from agent.graph import run_agent
+from auth import (
+    clear_auth_cookie,
+    create_access_token,
+    get_current_user,
+    hash_password,
+    public_user,
+    scoped_chat_id,
+    set_auth_cookie,
+    verify_password,
+)
+from data.users_store import get_users_store
 from data.vector_store import get_vector_store
 from data.metrics_store import get_metrics_store
 from data.ticker_mapping import get_ticker_mapper
@@ -56,6 +67,9 @@ async def lifespan(app: FastAPI):
     # Initialize PostgreSQL connection pool
     init_connection_pool()
     print("[SmartStock AI] PostgreSQL connection pool initialized")
+    
+    get_users_store()
+    print("[SmartStock AI] Users table ready")
     
     # Initialize metrics store with demo data
     metrics_store = get_metrics_store()
@@ -133,10 +147,15 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Configure CORS for frontend communication
+# Configure CORS for the chat UI (comma-separated origins)
+_frontend_origins = [
+    origin.strip()
+    for origin in os.getenv("FRONTEND_ORIGIN", "http://localhost:3001").split(",")
+    if origin.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3001"],  # Next.js frontend
+    allow_origins=_frontend_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -160,8 +179,57 @@ async def root():
     }
 
 
+@app.post("/api/auth/register", response_model=AuthResponse)
+async def register(body: RegisterRequest, response: Response) -> AuthResponse:
+    """Create an account and start a session."""
+    from psycopg2 import IntegrityError, errors as pg_errors
+
+    store = get_users_store()
+    if store.get_by_email(body.email):
+        raise ValidationError("An account with this email already exists", field="email")
+
+    try:
+        user = store.create(body.email, hash_password(body.password))
+    except (pg_errors.UniqueViolation, IntegrityError):
+        raise ValidationError("An account with this email already exists", field="email")
+
+    token = create_access_token(user["id"], user["email"])
+    set_auth_cookie(response, token)
+    return AuthResponse(access_token=token, user=UserPublic(**public_user(user)))
+
+
+@app.post("/api/auth/login", response_model=AuthResponse)
+async def login(body: LoginRequest, response: Response) -> AuthResponse:
+    """Sign in with email and password."""
+    from fastapi import HTTPException
+
+    user = get_users_store().get_by_email(body.email)
+    if not user or not verify_password(body.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    token = create_access_token(user["id"], user["email"])
+    set_auth_cookie(response, token)
+    return AuthResponse(access_token=token, user=UserPublic(**public_user(user)))
+
+
+@app.post("/api/auth/logout")
+async def logout(response: Response):
+    """Clear the session cookie."""
+    clear_auth_cookie(response)
+    return {"status": "ok"}
+
+
+@app.get("/api/auth/me", response_model=UserPublic)
+async def auth_me(user: dict = Depends(get_current_user)) -> UserPublic:
+    """Return the signed-in user."""
+    return UserPublic(**public_user(user))
+
+
 @app.post("/api/ask", response_model=AgentResponse)
-async def ask_smartstock(request: QueryRequest) -> AgentResponse:
+async def ask_smartstock(
+    request: QueryRequest,
+    user: dict = Depends(get_current_user),
+) -> AgentResponse:
     """
     Main endpoint for SmartStock AI queries.
     
@@ -182,16 +250,15 @@ async def ask_smartstock(request: QueryRequest) -> AgentResponse:
     if not request.query or not request.query.strip():
         raise ValidationError("Query cannot be empty", field="query")
     
-    if not request.chat_id or not request.chat_id.strip():
-        raise ValidationError("Chat ID cannot be empty", field="chat_id")
+    chat_id = scoped_chat_id(user, request.chat_id)
     
     # Log the incoming query
     print(f"[SmartStock AI] Received query: {request.query}")
-    print(f"[SmartStock AI] Chat ID: {request.chat_id}")
+    print(f"[SmartStock AI] User: {user['email']} Chat ID: {chat_id}")
     
     try:
         # Run the LangGraph agent
-        response = await run_agent(request.query, request.chat_id)
+        response = await run_agent(request.query, chat_id)
         
         print(f"[SmartStock AI] Response generated successfully")
         
@@ -356,7 +423,7 @@ async def health_check():
 
 
 @app.get("/api/company/{ticker}")
-async def get_company_info(ticker: str):
+async def get_company_info(ticker: str, user: dict = Depends(get_current_user)):
     """Get company information and available metrics for a ticker."""
     # Validate ticker
     if not ticker or not ticker.strip():
@@ -394,7 +461,11 @@ async def get_company_info(ticker: str):
 
 
 @app.get("/api/compare")
-async def compare_companies(tickers: str, metrics: str = "revenue_growth_yoy,gross_margin,pe_ratio"):
+async def compare_companies(
+    tickers: str,
+    metrics: str = "revenue_growth_yoy,gross_margin,pe_ratio",
+    user: dict = Depends(get_current_user),
+):
     """
     Compare metrics across multiple companies.
     
@@ -436,7 +507,7 @@ async def compare_companies(tickers: str, metrics: str = "revenue_growth_yoy,gro
 
 
 @app.post("/api/admin/archive-news")
-async def manual_archive_news():
+async def manual_archive_news(user: dict = Depends(get_current_user)):
     """
     Manually trigger news archival job.
     
@@ -466,7 +537,7 @@ async def manual_archive_news():
 
 
 @app.post("/api/admin/archive-prices")
-async def manual_archive_prices():
+async def manual_archive_prices(user: dict = Depends(get_current_user)):
     """
     Manually trigger price archival job.
     

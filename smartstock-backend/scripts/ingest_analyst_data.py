@@ -42,8 +42,8 @@ from data.financial_statements_store import FinancialStatementsStore
 load_dotenv()
 
 # Configuration
-SEMAPHORE_LIMIT = 1  # Concurrency limit (reduced to 1 for maximum safety - sequential processing)
-REQUEST_DELAY = 1.0  # Global delay between API requests (seconds) - steady 1 req/sec
+SEMAPHORE_LIMIT = 5  # Concurrency limit (optimized from 1 to 5 for 5x speedup)
+REQUEST_DELAY = 0.3  # Global delay between API requests (seconds) - optimized from 1.0s to 0.3s
 REQUEST_TIMEOUT = 60  # Request timeout
 CHUNK_SIZE = 50  # Process 50 tickers at a time, then bulk insert
 BULK_INSERT_SIZE = 1000  # Bulk insert every 1000 rows
@@ -417,7 +417,7 @@ async def fetch_analyst_consensus(
         (consensus_dict, error_message)
     """
     async with semaphore:
-        # Global delay to maintain steady stream (increased to reduce rate limits)
+        # Global delay to maintain steady stream
         await asyncio.sleep(REQUEST_DELAY)
         
         consensus_data = {
@@ -426,17 +426,24 @@ async def fetch_analyst_consensus(
         }
         errors = []
         
-        # 1. Fetch grades consensus
+        # OPTIMIZED: Fetch all three consensus endpoints in parallel
         url_grades = f"{FMP_BASE}/grades-consensus"
         params_grades = {"symbol": ticker.upper(), "apikey": FMP_API_KEY}
         
-        data_grades, error_grades = await async_fetch_with_retry(
-            session, url_grades, params_grades, ticker, "grades-consensus"
+        url_targets = f"{FMP_BASE}/price-target-consensus"
+        params_targets = {"symbol": ticker.upper(), "apikey": FMP_API_KEY}
+        
+        url_summary = f"{FMP_BASE}/price-target-summary"
+        params_summary = {"symbol": ticker.upper(), "apikey": FMP_API_KEY}
+        
+        # Fetch all three in parallel (reduces time from ~3s to ~1s per ticker)
+        (data_grades, error_grades), (data_targets, error_targets), (data_summary, error_summary) = await asyncio.gather(
+            async_fetch_with_retry(session, url_grades, params_grades, ticker, "grades-consensus"),
+            async_fetch_with_retry(session, url_targets, params_targets, ticker, "price-target-consensus"),
+            async_fetch_with_retry(session, url_summary, params_summary, ticker, "price-target-summary")
         )
         
-        # Add delay between consensus endpoint calls to avoid rate limits
-        await asyncio.sleep(REQUEST_DELAY)
-        
+        # Process grades consensus
         if error_grades:
             errors.append(f"Grades consensus: {error_grades}")
         elif data_grades and isinstance(data_grades, list) and len(data_grades) > 0:
@@ -450,17 +457,7 @@ async def fetch_analyst_consensus(
                 "consensus_rating": item.get("consensus", "")
             })
         
-        # 2. Fetch price target consensus
-        url_targets = f"{FMP_BASE}/price-target-consensus"
-        params_targets = {"symbol": ticker.upper(), "apikey": FMP_API_KEY}
-        
-        data_targets, error_targets = await async_fetch_with_retry(
-            session, url_targets, params_targets, ticker, "price-target-consensus"
-        )
-        
-        # Add delay between consensus endpoint calls to avoid rate limits
-        await asyncio.sleep(REQUEST_DELAY)
-        
+        # Process price target consensus
         if error_targets:
             errors.append(f"Price target consensus: {error_targets}")
         elif data_targets and isinstance(data_targets, list) and len(data_targets) > 0:
@@ -472,13 +469,7 @@ async def fetch_analyst_consensus(
                 "target_median": item.get("targetMedian")
             })
         
-        # 3. Fetch price target summary
-        url_summary = f"{FMP_BASE}/price-target-summary"
-        params_summary = {"symbol": ticker.upper(), "apikey": FMP_API_KEY}
-        
-        data_summary, error_summary = await async_fetch_with_retry(
-            session, url_summary, params_summary, ticker, "price-target-summary"
-        )
+        # Process price target summary
         
         if error_summary:
             errors.append(f"Price target summary: {error_summary}")
